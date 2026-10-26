@@ -54,10 +54,17 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
     }]
   })
 
+  // Text cut by the slice edge shows fully: replaying its fade or pop from the
+  // edge would leave a still frame with invisible or half-faded text.
   const texts = timeline.texts.flatMap((t) =>
     t.end <= start || t.start >= end
       ? []
-      : [{ ...t, start: round3(Math.max(0, t.start - start)), end: round3(Math.min(length, t.end - start)) }]
+      : [{
+        ...t,
+        start: round3(Math.max(0, t.start - start)),
+        end: round3(Math.min(length, t.end - start)),
+        animation: t.start < start || t.end > end ? "none" as const : t.animation
+      }]
   )
 
   return { ...timeline, main: fixed, overlays, audio, texts }

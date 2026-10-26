@@ -49,7 +49,7 @@ describe("render building blocks", () => {
     expect(sliced.main.map((c) => [c.in, c.out])).toEqual([[2, 4], [10, 12]])
     expect(sliced.main[1]!.transition).toEqual({ type: "crossfade", duration: 1 })
     expect(sliceTimeline(timeline, 3.5, 5).main[0]!.transition).toBeUndefined()
-    expect(sliced.texts[0]).toMatchObject({ start: 0, end: 3 })
+    expect(sliced.texts[0]).toMatchObject({ start: 0, end: 3, animation: "none" })
     expect(sliced.audio[0]).toMatchObject({ start: 0, in: 2 })
   })
 
