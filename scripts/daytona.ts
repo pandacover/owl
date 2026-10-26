@@ -97,10 +97,10 @@ const run = async (command: string, timeout = 600) => {
 }
 
 console.log("Uploading the server code...")
-const bundle = execFileSync("tar", ["-czf", "-", "package.json", "package-lock.json", "src"], { maxBuffer: 256 * 1024 ** 2 })
+const bundle = execFileSync("tar", ["-czf", "-", "package.json", "package-lock.json", "src", "assets"], { maxBuffer: 256 * 1024 ** 2 })
 await box.process.executeCommand(`mkdir -p ${app}`, home)
 await box.fs.uploadFile(bundle, `${app}/owl.tgz`)
-await run("rm -rf src && tar -xzf owl.tgz && rm owl.tgz")
+await run("rm -rf src assets && tar -xzf owl.tgz && rm owl.tgz")
 console.log("Installing dependencies...")
 await run("npm ci --omit=dev --ignore-scripts --no-audit --no-fund")
 
