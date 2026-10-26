@@ -399,7 +399,7 @@ const XFADE: Record<string, string> = {
 
 const BLANK_SOURCE: SourceInfo = { path: "", kind: "image", hasAudio: false, width: 0, height: 0 }
 
-/** Joins main clips: hard cuts use concat, transitions use xfade and acrossfade. */
+/** Joins main clips: one concat of clip bodies and transition blends (xfade for video, crossfaded audio). */
 const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames: number } | undefined => {
   const { timeline, canvas } = input
   const placed = placeMain(timeline.main)
@@ -422,8 +422,7 @@ const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames:
   // Each transition blends two short pieces: the last frames of one clip and
   // the first frames of the next, both exactly the overlap long. The pieces
   // and the clip bodies between them are joined by one concat. No transition
-  // depends on the output of another, so lengths are exact and FFmpeg
-  // versions agree (chained xfade offsets broke on FFmpeg 7).
+  // depends on the output of another, so lengths are exact by construction.
   const still = input.still === true
   const overlaps = placed.map((p, i) => {
     if (i === 0 || !p.clip.transition) return 0
@@ -467,7 +466,12 @@ const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames:
       const transition = placed[i]!.clip.transition!
       const seconds = n(head / fps)
       const v = g.label("xv")
-      g.add(`[${prevTail.v}][${headPiece.v}]xfade=transition=${XFADE[transition.type] ?? "fade"}:duration=${seconds}:offset=0[${v}]`)
+      // FFmpeg 7's xfade wants a declared constant frame rate on both inputs; trimmed pieces lose it.
+      const from = g.label("xf")
+      const to = g.label("xt")
+      g.add(`[${prevTail.v}]fps=${fps}[${from}]`)
+      g.add(`[${headPiece.v}]fps=${fps}[${to}]`)
+      g.add(`[${from}][${to}]xfade=transition=${XFADE[transition.type] ?? "fade"}:duration=${seconds}:offset=0[${v}]`)
       let a = ""
       if (!still) {
         const out = g.label("xo")
