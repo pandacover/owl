@@ -22,6 +22,7 @@ export const frameKey = (id: string, time: number) => `media/${id}/frames/${Math
 export const FRAME_SIZE = 512
 const PROXY_SIZE = 960
 const CAPTION_BATCH = 6
+const CAPTION_FRAMES = 24
 const MAX_DOWNLOAD_BYTES = 8 * 1024 ** 3
 
 export interface AnalyzerShape {
@@ -202,8 +203,20 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
         transcript: Transcript | undefined
       ) =>
         Effect.gen(function*() {
+          // Batches hold a few shots, and few enough frames to keep each request small.
           const batches: Array<Array<Shot>> = []
-          for (let i = 0; i < shots.length; i += CAPTION_BATCH) batches.push(shots.slice(i, i + CAPTION_BATCH))
+          let batch: Array<Shot> = []
+          let frameCount = 0
+          for (const shot of shots) {
+            if (batch.length > 0 && (batch.length >= CAPTION_BATCH || frameCount + shot.keyframes.length > CAPTION_FRAMES)) {
+              batches.push(batch)
+              batch = []
+              frameCount = 0
+            }
+            batch.push(shot)
+            frameCount += shot.keyframes.length
+          }
+          if (batch.length > 0) batches.push(batch)
           let done = 0
           const results = yield* Effect.forEach(batches, (batch) =>
             Effect.gen(function*() {
@@ -215,7 +228,16 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
                     .filter((s) => s.end > shot.start && s.start < shot.end)
                     .map((s) => s.text)
                     .join(" ")
-                  return { index: shot.index, start: shot.start, end: shot.end, motionLabel: shot.motionLabel, frames, speech }
+                  return {
+                    index: shot.index,
+                    start: shot.start,
+                    end: shot.end,
+                    motionLabel: shot.motionLabel,
+                    frames,
+                    frameTimes: shot.keyframes,
+                    moments: (shot.moments?.length ?? 0) > 0,
+                    speech
+                  }
                 }))
               const captions = yield* vision.captionShots(record.name, input)
               done += batch.length

@@ -18,9 +18,24 @@ const Seconds = d(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)), "Second
 const Color = d(Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)), "Hex color like #FFD400.")
 
 export const FitSchema = d(
-  Schema.Literals(["auto", "cover", "contain", "blur"]),
-  "How media fills the frame. auto (default) crops when the aspect ratio matches and uses a blurred background when it does not."
+  Schema.Literals(["auto", "cover", "contain", "blur", "card"]),
+  "How media fills the frame. auto (default) crops when the aspect ratio matches and uses a blurred background when it does not. card floats the media smaller with rounded corners and a soft shadow over the output background (set a color or gradient with set_output): the premium look for screen recordings and product shots."
 )
+const Fraction = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
+export const ZoomKeySchema = Schema.Struct({
+  at: d(Seconds, "Seconds from the start of the clip (on the timeline)."),
+  scale: d(Schema.Finite.check(Schema.isBetween({ minimum: 1, maximum: 5 })), "1 shows the whole frame, 2 is a 2x zoom."),
+  x: Schema.optionalKey(d(Fraction, "Point to center on, across the source frame: 0 left, 1 right. Default 0.5.")),
+  y: Schema.optionalKey(d(Fraction, "Point to center on, down the source frame: 0 top, 1 bottom. Default 0.5."))
+}).annotate({ identifier: "ZoomKey" })
+export const ZoomSchema = d(
+  Schema.Array(ZoomKeySchema).check(Schema.isMaxLength(24)),
+  "Zoom and pan keyframes. Moves ease smoothly between keys and hold before the first and after the last. Example punch-in on a tap at the lower right: [{at:0,scale:1},{at:0.6,scale:1.8,x:0.7,y:0.8},{at:2,scale:1.8,x:0.7,y:0.8},{at:2.5,scale:1}]."
+)
+export const CardSchema = Schema.Struct({
+  scale: Schema.optionalKey(d(Schema.Finite.check(Schema.isBetween({ minimum: 0.2, maximum: 1 })), "Card size relative to the frame. Default 0.8.")),
+  y: Schema.optionalKey(d(Schema.Finite.check(Schema.isBetween({ minimum: -0.5, maximum: 0.5 })), "Move the card down (positive) or up, as a fraction of frame height. Leave room for a headline. Default 0."))
+}).annotate({ identifier: "Card", description: "Only with fit card." })
 export const LayoutSchema = Schema.Literals([
   "full",
   "pip_top_right",
@@ -41,19 +56,35 @@ export const TransitionTypeSchema = Schema.Literals([
   "wipe_right",
   "slide_left",
   "slide_right",
-  "zoom_in"
+  "zoom_in",
+  "smooth_left",
+  "smooth_right",
+  "smooth_up",
+  "smooth_down",
+  "circle_open"
 ])
 export const TransitionSchema = Schema.Struct({
   type: TransitionTypeSchema,
   duration: Schema.optionalKey(d(Seconds, "Seconds, default 0.5."))
 }).annotate({ identifier: "Transition", description: "Transition from the previous main clip into this one." })
-export const TextStyleSchema = Schema.Literals(["title", "subtitle", "lower_third", "caption", "cta", "label"])
+export const TextStyleSchema = d(
+  Schema.Literals(["title", "headline", "kicker", "subtitle", "lower_third", "caption", "highlight", "cta", "label"]),
+  "headline: very large heavy display type for hooks. title: large display type. kicker: small spaced uppercase line above a headline. subtitle and caption: supporting lines. highlight: text on a solid box (default white box, dark text). cta: call to action on a colored box. lower_third: name strip. label: small tag."
+)
 export const TextPositionSchema = Schema.Literals(["center", "top", "bottom", "lower_left", "upper_left", "upper_right"])
-export const TextAnimationSchema = Schema.Literals(["none", "fade", "pop", "slide_up"])
+export const TextAnimationSchema = d(
+  Schema.Literals(["none", "fade", "pop", "slide_up", "rise", "zoom", "words", "typewriter"]),
+  "words: words appear one by one (great for headlines). typewriter: letters appear one by one. rise: soft slide up. zoom: settles in from slightly larger. pop: bouncy scale."
+)
+export const TextFontSchema = d(
+  Schema.Literals(["sans", "display", "serif"]),
+  "sans: Inter. display: Inter Display, heavy and tight (default for title, headline, highlight, cta). serif: Instrument Serif, elegant editorial look."
+)
 
 const SourceRange = {
   media: Id("Media id, e.g. m_7kq2xd."),
   shot: Schema.optionalKey(d(Schema.Int, "Use this shot's range (shot numbers come from media_get or media_search).")),
+  moment: Schema.optionalKey(d(Schema.Int, "With shot: use only this moment of the shot (one step of a screen recording, listed under the shot in media_get).")),
   in: Schema.optionalKey(d(TimeInput, "Start inside the source. Default: shot start, or 0.")),
   out: Schema.optionalKey(d(TimeInput, "End inside the source. Default: shot end, or the end of the media.")),
   duration: Schema.optionalKey(d(Seconds, "Length instead of `out`. For images, how long to show it (default 3s)."))
@@ -64,6 +95,8 @@ export const ClipInput = Schema.Struct({
   speed: Schema.optionalKey(Speed),
   volume: Schema.optionalKey(Volume),
   fit: Schema.optionalKey(FitSchema),
+  card: Schema.optionalKey(CardSchema),
+  zoom: Schema.optionalKey(ZoomSchema),
   transition: Schema.optionalKey(TransitionSchema)
 }).annotate({ identifier: "Clip", description: "A piece of a media file for the main track." })
 export type ClipInput = typeof ClipInput.Type
@@ -126,6 +159,8 @@ export const AddOverlay = d(
     start: d(TimeInput, "Timeline time where the overlay appears."),
     layout: Schema.optionalKey(d(LayoutSchema, "Default full (B-roll over the main track).")),
     fit: Schema.optionalKey(FitSchema),
+    card: Schema.optionalKey(CardSchema),
+    zoom: Schema.optionalKey(ZoomSchema),
     volume: Schema.optionalKey(d(Volume, "Default 0: B-roll is muted so the main audio continues.")),
     speed: Schema.optionalKey(Speed),
     fade_in: Schema.optionalKey(Seconds),
@@ -160,16 +195,33 @@ export const AddText = d(
     duration: Schema.optionalKey(d(Seconds, "Instead of end. Default 3s.")),
     style: Schema.optionalKey(d(TextStyleSchema, "Default title.")),
     position: Schema.optionalKey(d(TextPositionSchema, "Default depends on style.")),
-    color: Schema.optionalKey(Color),
+    color: Schema.optionalKey(d(Color, "Text color.")),
+    background: Schema.optionalKey(d(Color, "Box color for highlight, cta, label and lower_third.")),
+    font: Schema.optionalKey(TextFontSchema),
+    y: Schema.optionalKey(d(Fraction, "Pin the top of the text at this height (0 top, 1 bottom) instead of the position's default. Use it to stack a kicker above a headline.")),
     animation: Schema.optionalKey(d(TextAnimationSchema, "Default fade."))
   }),
-  "Add a title, lower third, call to action or label."
+  "Add a headline, title, kicker, caption, highlight, call to action, lower third or label."
+)
+
+export const AddBlur = d(
+  Schema.Struct({
+    op: Schema.Literal("add_blur"),
+    start: TimeInput,
+    end: Schema.optionalKey(TimeInput),
+    duration: Schema.optionalKey(d(Seconds, "Instead of end. Default: to the end of the main clip under start.")),
+    x: d(Fraction, "Left edge, as a fraction of the output frame width."),
+    y: d(Fraction, "Top edge, as a fraction of the output frame height."),
+    w: d(Fraction, "Width, as a fraction of the frame."),
+    h: d(Fraction, "Height, as a fraction of the frame.")
+  }),
+  "Blur a rectangle of the output frame, to hide private details (names, phone numbers, notifications, faces). Check placement with preview_frames."
 )
 
 export const Update = d(
   Schema.Struct({
     op: Schema.Literal("update"),
-    id: Id("Any item id: c (main clip), o (overlay), a (audio) or t (text)."),
+    id: Id("Any item id: c (main clip), o (overlay), a (audio), t (text) or b (blur)."),
     in: Schema.optionalKey(TimeInput),
     out: Schema.optionalKey(TimeInput),
     start: Schema.optionalKey(TimeInput),
@@ -178,6 +230,8 @@ export const Update = d(
     speed: Schema.optionalKey(Speed),
     volume: Schema.optionalKey(Volume),
     fit: Schema.optionalKey(FitSchema),
+    card: Schema.optionalKey(CardSchema),
+    zoom: Schema.optionalKey(Schema.NullOr(ZoomSchema)),
     transition: Schema.optionalKey(Schema.NullOr(TransitionSchema)),
     layout: Schema.optionalKey(LayoutSchema),
     fade_in: Schema.optionalKey(Seconds),
@@ -188,9 +242,15 @@ export const Update = d(
     style: Schema.optionalKey(TextStyleSchema),
     position: Schema.optionalKey(TextPositionSchema),
     color: Schema.optionalKey(Schema.NullOr(Color)),
-    animation: Schema.optionalKey(TextAnimationSchema)
+    background: Schema.optionalKey(Schema.NullOr(Color)),
+    font: Schema.optionalKey(TextFontSchema),
+    animation: Schema.optionalKey(TextAnimationSchema),
+    x: Schema.optionalKey(Fraction),
+    y: Schema.optionalKey(d(Schema.NullOr(Fraction), "Text: pinned height, null to unpin. Blur: top edge.")),
+    w: Schema.optionalKey(Fraction),
+    h: Schema.optionalKey(Fraction)
   }),
-  "Change fields of one item. Only fields that apply to that item type are accepted. transition: null removes it."
+  "Change fields of one item. Only fields that apply to that item type are accepted. transition: null and zoom: null remove them."
 )
 
 export const Delete = d(
@@ -224,9 +284,10 @@ export const SetOutput = d(
     width: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 3840 }))),
     height: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 3840 }))),
     fps: Schema.optionalKey(Schema.Finite.check(Schema.isBetween({ minimum: 1, maximum: 60 }))),
-    background: Schema.optionalKey(Color)
+    background: Schema.optionalKey(d(Color, "Background color, seen around contain and card media.")),
+    gradient: Schema.optionalKey(d(Schema.NullOr(Color), "Second color: the background becomes a diagonal gradient from background to this. null for a flat color."))
   }),
-  "Set the output frame size, frame rate or background color."
+  "Set the output frame size, frame rate or background."
 )
 
 export const EditOp = Schema.Union([
@@ -239,6 +300,7 @@ export const EditOp = Schema.Union([
   AddOverlay,
   AddAudio,
   AddText,
+  AddBlur,
   Update,
   Delete,
   SetCaptions,

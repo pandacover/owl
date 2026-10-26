@@ -4,7 +4,7 @@ import { applyEdits, EditFailure, type MediaInfo } from "../../src/timeline/appl
 import type { EditOp } from "../../src/timeline/Ops.ts"
 
 const media: Record<string, MediaInfo> = {
-  m_a: { id: "m_a", name: "a.mp4", kind: "video", duration: 20, width: 1080, height: 1920, fps: 29.97, hasAudio: true, hasTranscript: true, shots: [{ index: 1, start: 0, end: 8 }, { index: 2, start: 8, end: 20 }] },
+  m_a: { id: "m_a", name: "a.mp4", kind: "video", duration: 20, width: 1080, height: 1920, fps: 29.97, hasAudio: true, hasTranscript: true, shots: [{ index: 1, start: 0, end: 8, moments: [{ start: 0, end: 3 }, { start: 3, end: 8 }] }, { index: 2, start: 8, end: 20 }] },
   m_b: { id: "m_b", name: "b.mp4", kind: "video", duration: 10, width: 1920, height: 1080, fps: 25, hasAudio: true, hasTranscript: false, shots: [] },
   m_s: { id: "m_s", name: "song.mp3", kind: "audio", duration: 120, width: 0, height: 0, fps: 0, hasAudio: true, hasTranscript: false, shots: [] },
   m_i: { id: "m_i", name: "logo.png", kind: "image", duration: 0, width: 800, height: 600, fps: 0, hasAudio: false, hasTranscript: false, shots: [] }
@@ -108,5 +108,30 @@ describe("applyEdits", () => {
   it("music fills to the end", () => {
     const p = run(empty, [{ op: "add_audio", media: "m_s", fill: true, volume: 0.3 }])
     expect(p.timeline.audio[0]).toMatchObject({ loop: true, duration: undefined, duck: true })
+  })
+
+  it("takes a moment of a shot and keeps zoom and card on clips", () => {
+    const p = run(empty, [{
+      op: "set_main",
+      clips: [{ media: "m_a", shot: 1, moment: 2, fit: "card", card: { scale: 0.7, y: 0.1 }, zoom: [{ at: 0, scale: 1 }, { at: 1, scale: 1.8, x: 0.5, y: 0.3 }] }]
+    }])
+    const c = p.timeline.main[0]!
+    expect([c.in, c.out, c.fit]).toEqual([3, 8, "card"])
+    expect(c.card).toEqual({ scale: 0.7, y: 0.1 })
+    expect(c.zoom![1]).toMatchObject({ scale: 1.8, x: 0.5, y: 0.3 })
+    expect(() => run(empty, [{ op: "set_main", clips: [{ media: "m_a", shot: 1, moment: 3 }] }])).toThrow(/moments 1 to 2/)
+    expect(() => run(empty, [{ op: "set_main", clips: [{ media: "m_a", shot: 2, moment: 1 }] }])).toThrow(/no moments/)
+  })
+
+  it("adds blurs that ripple with the main track and get deleted", () => {
+    let p = run(empty, [
+      { op: "set_main", clips: [{ media: "m_a", in: 0, out: 5 }, { media: "m_b", in: 0, out: 5 }] },
+      { op: "add_blur", start: 6, x: 0.1, y: 0.1, w: 0.3, h: 0.1 }
+    ])
+    expect(p.timeline.blurs![0]).toMatchObject({ id: "b1", start: 6, end: 10 })
+    p = run(p, [{ op: "delete", ids: ["c1"] }])
+    expect(p.timeline.blurs![0]).toMatchObject({ start: 1, end: 5 })
+    p = run(p, [{ op: "delete", ids: ["b1"] }])
+    expect(p.timeline.blurs ?? []).toEqual([])
   })
 })

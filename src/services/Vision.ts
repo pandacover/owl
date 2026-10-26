@@ -3,7 +3,7 @@ import { Context, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { OwlConfig } from "../Config.ts"
 import { AiError } from "../domain/Errors.ts"
 import type { ShotCaption } from "../domain/Media.ts"
-import { formatRange, round1 } from "../domain/Time.ts"
+import { formatRange, formatTime, round1 } from "../domain/Time.ts"
 
 export interface ShotForCaption {
   readonly index: number
@@ -11,6 +11,10 @@ export interface ShotForCaption {
   readonly end: number
   readonly motionLabel: string
   readonly frames: ReadonlyArray<Uint8Array>
+  /** Source time of each frame. */
+  readonly frameTimes: ReadonlyArray<number>
+  /** The frames are one per moment (a step of a screen recording or a still shot). */
+  readonly moments: boolean
   /** Words spoken during the shot, when there is a transcript. */
   readonly speech?: string | undefined
 }
@@ -39,7 +43,8 @@ const CaptionJson = Schema.Struct({
     on_screen_text: Schema.String,
     tags: Schema.Array(Schema.String),
     appeal: Schema.Int,
-    issues: Schema.String
+    issues: Schema.String,
+    frame_notes: Schema.Array(Schema.String)
   }))
 })
 const decodeCaptions = Schema.decodeUnknownEffect(Schema.fromJsonString(CaptionJson))
@@ -55,7 +60,7 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["shot", "description", "subjects", "setting", "shot_type", "camera_motion", "on_screen_text", "tags", "appeal", "issues"],
+        required: ["shot", "description", "subjects", "setting", "shot_type", "camera_motion", "on_screen_text", "tags", "appeal", "issues", "frame_notes"],
         properties: {
           shot: { type: "integer" },
           description: { type: "string" },
@@ -66,7 +71,8 @@ const OUTPUT_SCHEMA = {
           on_screen_text: { type: "string" },
           tags: stringArray,
           appeal: { type: "integer", enum: [1, 2, 3, 4, 5] },
-          issues: { type: "string" }
+          issues: { type: "string" },
+          frame_notes: stringArray
         }
       }
     }
@@ -83,7 +89,8 @@ For each shot you get its time range and frames sampled from it, in order. Descr
 - on_screen_text: any readable text or logos, verbatim. Empty string if none.
 - tags: 3 to 8 lowercase search words (mood, colors, action, product category, b-roll type).
 - appeal: 1 to 5, how usable and attractive the shot is for a polished edit (5 = hero shot, 1 = unusable).
-- issues: problems like blur, shaky camera, bad exposure, a black or transition frame. Empty string if none.
+- issues: problems like blur, shaky camera, bad exposure, a black or transition frame, and private details an ad should hide (phone numbers, contact names, emails, notification badges, personal messages). Empty string if none.
+- frame_notes: one short note per frame, in order (same count as frames). Say what is on screen at that frame and what changed since the previous frame. For screen recordings name the screen and the action, e.g. "Notes tab open: library with two notes" or "Share sheet open, Add to Home Screen highlighted". These notes let the editor cut to the exact step.
 
 Do not guess names of people. Return one entry per shot, using the shot numbers given.`
 
@@ -104,15 +111,17 @@ export class Vision extends Context.Service<Vision, VisionShape>()("owl/Vision")
           ]
           for (const shot of shots) {
             const header = `Shot ${shot.index} (${formatRange(shot.start, shot.end)}, ${round1(shot.end - shot.start)}s, ` +
-              `measured motion: ${shot.motionLabel}, ${shot.frames.length} frame(s))` +
+              `measured motion: ${shot.motionLabel}, ${shot.frames.length} frame(s)` +
+              `${shot.moments ? ", one frame per step where the picture changed" : ""})` +
               (shot.speech ? `. Speech during the shot: "${shot.speech.slice(0, 300)}"` : "")
             content.push({ type: "text", text: header })
-            for (const frame of shot.frames) {
+            shot.frames.forEach((frame, i) => {
+              content.push({ type: "text", text: `Frame ${i + 1} at ${formatTime(shot.frameTimes[i] ?? shot.start)}` })
               content.push({
                 type: "image",
                 source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(frame).toString("base64") }
               })
-            }
+            })
           }
           const response = yield* Effect.tryPromise({
             try: (signal) =>
@@ -149,7 +158,8 @@ export class Vision extends Context.Service<Vision, VisionShape>()("owl/Vision")
               onScreenText: s.on_screen_text,
               tags: s.tags,
               appeal: Math.min(5, Math.max(1, s.appeal)),
-              issues: s.issues
+              issues: s.issues,
+              notes: s.frame_notes
             })
           }
           return result as ReadonlyMap<number, ShotCaption>

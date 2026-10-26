@@ -1,11 +1,14 @@
 import { formatDuration, formatRange, formatTime, round1 } from "../domain/Time.ts"
 import {
   audioItemDuration,
+  type CardSettings,
   clipDuration,
+  type Fit,
   mainDuration,
   placeMain,
   type Project,
-  timelineDuration
+  timelineDuration,
+  type ZoomKey
 } from "../domain/Timeline.ts"
 
 export interface DescribeSources {
@@ -15,6 +18,12 @@ export interface DescribeSources {
   /** Short visual description of a source range, if the media has shot captions. */
   readonly visual?: (mediaId: string, start: number, end: number) => string | undefined
 }
+
+const zoomText = (keys: ReadonlyArray<ZoomKey>) =>
+  `zoom ${keys.map((k) => `${round1(k.at)}s ${k.scale}x@${k.x},${k.y}`).join(" → ")}`
+
+const fitText = (fit: Fit, card: CardSettings | undefined) =>
+  fit === "card" && card ? `card${card.scale !== undefined ? ` ${card.scale}` : ""}${card.y ? ` y ${card.y}` : ""}` : fit
 
 const quote = (s: string, max: number) => `"${s.length > max ? `${s.slice(0, max - 1)}…` : s}"`
 
@@ -29,7 +38,7 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
   lines.push(
     `${project.id} ${quote(project.name, 60)} · version ${project.version} · ${t.output.width}x${t.output.height} ${
       round1(t.output.fps)
-    }fps · length ${formatDuration(end)}`
+    }fps · length ${formatDuration(end)} · background ${t.output.background}${t.output.gradient ? `→${t.output.gradient}` : ""}`
   )
 
   const placed = placeMain(t.main)
@@ -40,7 +49,8 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
     const extras: Array<string> = []
     if (c.speed !== 1) extras.push(`${c.speed}x`)
     if (c.volume !== 1) extras.push(c.volume === 0 ? "muted" : `vol ${c.volume}`)
-    if (c.fit !== "auto") extras.push(c.fit)
+    if (c.fit !== "auto") extras.push(fitText(c.fit, c.card))
+    if (c.zoom) extras.push(zoomText(c.zoom))
     if (c.transition) extras.push(`${c.transition.type} ${c.transition.duration}s in`)
     lines.push(
       `  ${c.id}  ${formatRange(p.start, p.end)}  ${c.mediaId} ${quote(sources.name(c.mediaId), 30)} ${
@@ -61,7 +71,8 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
       const extras: Array<string> = [o.layout]
       if (o.volume > 0) extras.push(`vol ${o.volume}`)
       if (o.speed !== 1) extras.push(`${o.speed}x`)
-      if (o.fit !== "auto") extras.push(o.fit)
+      if (o.fit !== "auto") extras.push(fitText(o.fit, o.card))
+      if (o.zoom) extras.push(zoomText(o.zoom))
       if (o.fadeIn > 0) extras.push(`fade in ${o.fadeIn}s`)
       if (o.fadeOut > 0) extras.push(`fade out ${o.fadeOut}s`)
       lines.push(
@@ -99,8 +110,18 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
     for (const x of t.texts) {
       const extras: Array<string> = [x.style, x.position]
       if (x.animation !== "none") extras.push(x.animation)
+      if (x.font) extras.push(x.font)
+      if (x.y !== undefined) extras.push(`y ${x.y}`)
       if (x.color) extras.push(x.color)
+      if (x.background) extras.push(`box ${x.background}`)
       lines.push(`  ${x.id}  ${formatRange(x.start, x.end)}  ${quote(x.text.replace(/\n/g, " / "), 80)}  ${extras.join(", ")}`)
+    }
+  }
+
+  if (t.blurs && t.blurs.length > 0) {
+    lines.push("", "Blurs:")
+    for (const b of t.blurs) {
+      lines.push(`  ${b.id}  ${formatRange(b.start, b.end)}  box x ${b.x} y ${b.y} w ${b.w} h ${b.h}`)
     }
   }
 

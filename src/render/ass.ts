@@ -3,6 +3,7 @@ import {
   type CaptionSettings,
   type OutputSettings,
   placeMain,
+  type TextFont,
   type TextItem,
   type TextPosition,
   type TextStyle,
@@ -16,6 +17,13 @@ import {
  */
 
 export const FONT = "Inter"
+
+/** Font family names, matching the files in assets/fonts. */
+const FAMILIES: Record<TextFont, { readonly regular: string; readonly bold: string }> = {
+  sans: { regular: "Inter", bold: "Inter" },
+  display: { regular: "Inter Display", bold: "Inter Display Black" },
+  serif: { regular: "Instrument Serif", bold: "Instrument Serif" }
+}
 
 const ALIGN: Record<TextPosition, number> = {
   lower_left: 1,
@@ -31,6 +39,13 @@ const assColor = (hex: string, alpha = 0) => {
   const h = hex.replace("#", "")
   const a = alpha.toString(16).padStart(2, "0").toUpperCase()
   return `&H${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`.toUpperCase()
+}
+
+/** Relative luminance of a #RRGGBB color, 0 (black) to 1 (white). */
+const luminance = (hex: string) => {
+  const h = hex.replace("#", "")
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
 }
 
 const assTime = (t: number) => {
@@ -51,35 +66,69 @@ interface StyleSpec {
   /** 1 outline, 3 opaque box. */
   readonly border: 1 | 3
   readonly back: string
+  readonly font: TextFont
+  readonly color: string
+  /** Letter spacing, in fractions of the frame's short side. */
+  readonly spacing: number
+  /** Soft outline: a translucent dark halo instead of a hard black edge. */
+  readonly soft: boolean
+  readonly uppercase: boolean
 }
+
+const spec = (s: Partial<StyleSpec> & Pick<StyleSpec, "size">): StyleSpec => ({
+  bold: true,
+  outline: 0.004,
+  shadow: 0,
+  border: 1,
+  back: "#000000",
+  font: "sans",
+  color: "#FFFFFF",
+  spacing: 0,
+  soft: true,
+  uppercase: false,
+  ...s
+})
 
 const TEXT_STYLES: Record<TextStyle, StyleSpec> = {
-  title: { size: 0.1, bold: true, outline: 0.004, shadow: 0.003, border: 1, back: "#000000" },
-  subtitle: { size: 0.055, bold: false, outline: 0.003, shadow: 0.002, border: 1, back: "#000000" },
-  lower_third: { size: 0.045, bold: true, outline: 0.012, shadow: 0, border: 3, back: "#111111" },
-  caption: { size: 0.05, bold: true, outline: 0.004, shadow: 0.002, border: 1, back: "#000000" },
-  cta: { size: 0.07, bold: true, outline: 0.016, shadow: 0, border: 3, back: "#E11D48" },
-  label: { size: 0.035, bold: true, outline: 0.008, shadow: 0, border: 3, back: "#000000" }
+  title: spec({ size: 0.1, font: "display", spacing: -0.001 }),
+  headline: spec({ size: 0.13, font: "display", spacing: -0.002, outline: 0.005 }),
+  kicker: spec({ size: 0.032, spacing: 0.004, uppercase: true, outline: 0.003 }),
+  subtitle: spec({ size: 0.055, bold: false, outline: 0.003 }),
+  lower_third: spec({ size: 0.045, outline: 0.012, border: 3, back: "#111111", soft: false }),
+  caption: spec({ size: 0.05, outline: 0.004 }),
+  highlight: spec({ size: 0.062, font: "display", outline: 0.02, border: 3, back: "#FFFFFF", color: "#111111", soft: false }),
+  cta: spec({ size: 0.07, font: "display", outline: 0.022, border: 3, back: "#E11D48", soft: false }),
+  label: spec({ size: 0.035, outline: 0.008, border: 3, back: "#000000", soft: false })
 }
 
-const styleLine = (name: string, spec: StyleSpec, base: number, align: number, margins: [number, number, number]) => {
+const styleLine = (
+  name: string,
+  spec: StyleSpec,
+  base: number,
+  align: number,
+  margins: [number, number, number],
+  font: TextFont = spec.font
+) => {
   const px = (k: number) => Math.max(1, Math.round(k * base))
+  const family = spec.bold ? FAMILIES[font].bold : FAMILIES[font].regular
+  // The Black and serif families carry their weight in the name, so they are not made bold again.
+  const bold = spec.bold && family === FAMILIES[font].regular && font === "sans"
   return [
     `Style: ${name}`,
-    FONT,
+    family,
     px(spec.size),
-    assColor("#FFFFFF"),
-    assColor("#FFFFFF"),
+    assColor(spec.color),
+    assColor(spec.color),
     // With BorderStyle 3 libass fills the box with the outline color.
-    assColor(spec.border === 3 ? spec.back : "#000000", spec.border === 3 ? 0x20 : 0),
+    spec.border === 3 ? assColor(spec.back, 0x08) : assColor("#000000", spec.soft ? 0xB8 : 0),
     assColor("#000000", 0x80),
-    spec.bold ? -1 : 0,
+    bold ? -1 : 0,
     0,
     0,
     0,
     100,
     100,
-    0,
+    Math.round(spec.spacing * base * 10) / 10,
     0,
     spec.border,
     spec.border === 3 ? px(spec.outline) : Math.max(1, px(spec.outline)),
@@ -92,37 +141,85 @@ const styleLine = (name: string, spec: StyleSpec, base: number, align: number, m
   ].join(",")
 }
 
-const animationTags = (item: TextItem) => {
-  switch (item.animation) {
-    case "none":
-      return ""
-    case "fade":
-      return "{\\fad(250,250)}"
-    case "pop":
-      return "{\\fad(120,200)\\fscx70\\fscy70\\t(0,180,\\fscx108\\fscy108)\\t(180,280,\\fscx100\\fscy100)}"
-    case "slide_up":
-      return ""
-  }
+/** Where an aligned line sits, for \\move and \\pos. */
+const anchor = (align: number, output: OutputSettings, marginV: number) => {
+  const x = align === 1 || align === 7
+    ? Math.round(output.width * 0.06)
+    : align === 9
+    ? Math.round(output.width * 0.94)
+    : Math.round(output.width / 2)
+  const y = align === 5 ? Math.round(output.height / 2) : align >= 7 ? marginV : output.height - marginV
+  return { x, y }
 }
 
 const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
-  let tags = animationTags(item)
-  const align = ALIGN[item.position]
-  if (item.animation === "slide_up") {
-    // Compute the anchor point so \move can slide the text up into place.
-    const x = align === 1 || align === 7
-      ? Math.round(output.width * 0.06)
-      : align === 9
-      ? Math.round(output.width * 0.94)
-      : Math.round(output.width / 2)
-    const y = align === 5 ? Math.round(output.height / 2) : align >= 7 ? marginV : output.height - marginV
-    const shift = Math.round(output.height * 0.04)
-    tags = `{\\an${align}\\fad(200,200)\\move(${x},${y + shift},${x},${y},0,300)}`
+  const style = TEXT_STYLES[item.style]
+  // An explicit y pins the top of the text at that height; the position still decides left, center or right.
+  const pinned = item.y !== undefined
+  const horizontal = ALIGN[item.position] % 3
+  const align = pinned ? (horizontal === 1 ? 7 : horizontal === 0 ? 9 : 8) : ALIGN[item.position]
+  const point = pinned
+    ? { x: anchor(align, output, marginV).x, y: Math.round(item.y! * output.height) }
+    : anchor(align, output, marginV)
+  const raw = style.uppercase ? item.text.toUpperCase() : item.text
+  const color = item.color ? `\\c${assColor(item.color)}` : ""
+  const box = item.background && style.border === 3 ? `\\3c${assColor(item.background)}` : ""
+  // A dark halo helps light text over video; behind dark text it only smudges, so dark text gets none.
+  const darkText = item.color !== undefined && luminance(item.color) < 0.45
+  const soft = style.border === 3 ? "" : darkText ? "\\bord0\\shad0" : style.soft ? "\\blur6" : ""
+  const lead = `{${color}${box}${soft}}`
+  const durationMs = Math.round((item.end - item.start) * 1000)
+  let tags = pinned ? `\\an${align}\\pos(${point.x},${point.y})` : ""
+  let body = escapeText(raw)
+  switch (item.animation) {
+    case "none":
+      break
+    case "fade":
+      tags += "\\fad(250,250)"
+      break
+    case "pop":
+      tags += "\\fad(120,200)\\fscx70\\fscy70\\t(0,180,\\fscx108\\fscy108)\\t(180,280,\\fscx100\\fscy100)"
+      break
+    case "zoom":
+      tags += "\\fad(200,200)\\fscx118\\fscy118\\t(0,450,0.5,\\fscx100\\fscy100)"
+      break
+    case "slide_up":
+    case "rise": {
+      const { x, y } = point
+      const shift = Math.round(output.height * (item.animation === "rise" ? 0.025 : 0.04))
+      tags = `\\an${align}\\fad(${item.animation === "rise" ? 300 : 200},200)\\move(${x},${y + shift},${x},${y},0,${
+        item.animation === "rise" ? 450 : 300
+      })`
+      break
+    }
+    case "words":
+    case "typewriter": {
+      const lines = raw.split(/\r?\n/)
+      const letters = item.animation === "typewriter"
+      const units = lines.reduce((sum, l) => sum + (letters ? l.length : l.split(/\s+/).filter(Boolean).length), 0)
+      // Finish revealing within the first half of the text's time.
+      const step = Math.max(letters ? 15 : 60, Math.min(letters ? 45 : 160, Math.round(durationMs * 0.5 / Math.max(1, units))))
+      let offset = 0
+      body = lines.map((line) => {
+        const parts = letters ? [...line].map(escapeText) : line.split(/\s+/).filter(Boolean).map(escapeText)
+        const out = parts
+          .map((part, i) => {
+            const t = (offset + i) * step
+            const fade = letters ? 1 : 220
+            const sharpen = letters ? "" : "\\blur6"
+            return `{\\alpha&HFF&${sharpen}\\t(${t},${t + fade},\\alpha&H00&${letters ? "" : "\\blur0"})}${part}`
+          })
+          .join(letters ? "" : " ")
+        offset += parts.length
+        return out
+      }).join("\\N")
+      tags += "\\fad(0,200)"
+      break
+    }
   }
-  const color = item.color ? `{\\c${assColor(item.color)}}` : ""
-  return `Dialogue: 1,${assTime(item.start)},${assTime(item.end)},${item.style}.${item.position},,0,0,0,,${tags}${color}${
-    escapeText(item.text)
-  }`
+  return `Dialogue: 1,${assTime(item.start)},${assTime(item.end)},${item.style}.${item.position}.${item.font ?? style.font},,0,0,0,,${
+    tags ? `{${tags}}` : ""
+  }${lead === "{}" ? "" : lead}${body}`
 }
 
 export interface CaptionWord {
@@ -195,10 +292,10 @@ const captionEvents = (words: ReadonlyArray<CaptionWord>, settings: CaptionSetti
 }
 
 const CAPTION_STYLES: Record<CaptionSettings["style"], StyleSpec> = {
-  clean: { size: 0.055, bold: false, outline: 0.004, shadow: 0.002, border: 1, back: "#000000" },
-  bold: { size: 0.075, bold: true, outline: 0.006, shadow: 0.003, border: 1, back: "#000000" },
-  karaoke: { size: 0.075, bold: true, outline: 0.006, shadow: 0.003, border: 1, back: "#000000" },
-  boxed: { size: 0.055, bold: true, outline: 0.012, shadow: 0, border: 3, back: "#000000" }
+  clean: spec({ size: 0.055, bold: false, outline: 0.004, shadow: 0.002, soft: false }),
+  bold: spec({ size: 0.075, outline: 0.006, shadow: 0.003, soft: false }),
+  karaoke: spec({ size: 0.075, outline: 0.006, shadow: 0.003, soft: false }),
+  boxed: spec({ size: 0.055, outline: 0.012, border: 3, soft: false })
 }
 
 /** Builds the ASS document, or undefined when there is nothing to draw. */
@@ -214,10 +311,10 @@ export const buildAss = (
   const marginH = Math.round(out.width * 0.06)
   const marginV = Math.round(out.height * 0.06)
   const styles: Array<string> = []
-  const used = new Set(timeline.texts.map((t) => `${t.style}.${t.position}`))
+  const used = new Set(timeline.texts.map((t) => `${t.style}.${t.position}.${t.font ?? TEXT_STYLES[t.style].font}`))
   for (const key of used) {
-    const [style, position] = key.split(".") as [TextStyle, TextPosition]
-    styles.push(styleLine(key, TEXT_STYLES[style], base, ALIGN[position], [marginH, marginH, marginV]))
+    const [style, position, font] = key.split(".") as [TextStyle, TextPosition, TextFont]
+    styles.push(styleLine(key, TEXT_STYLES[style], base, ALIGN[position], [marginH, marginH, marginV], font))
   }
   if (captions) {
     const align = captions.position === "top" ? 8 : captions.position === "center" ? 5 : 2

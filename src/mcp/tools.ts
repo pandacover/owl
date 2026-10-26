@@ -17,6 +17,7 @@ import { Renderer } from "../services/Renderer.ts"
 import { Search } from "../services/Search.ts"
 import { Storage } from "../services/Storage.ts"
 import { describeMedia, mediaLine, renderLine, searchText, transcriptText } from "./format.ts"
+import { GUIDE, GUIDE_TOPICS } from "./guide.ts"
 import { registerTool } from "./tool.ts"
 
 const d = <S extends Schema.Top>(schema: S, description: string) => schema.annotate({ description }) as S
@@ -33,12 +34,13 @@ export const INSTRUCTIONS = `owl edits videos. You drive it with these tools; it
 
 Workflow:
 1. Get media in. media_upload_link gives a page where the user uploads files from their phone or computer. media_import takes a public URL (direct link, Google Drive or Dropbox share link).
-2. Each file is analyzed in the background: shots with visual descriptions, speech transcript with word timings, music tempo and beats, quiet parts. media_get with wait_seconds waits for it. Footage without speech (product shots, B-roll) is fully described by its shots.
-3. Find material with media_search (natural language, searches visuals and speech) and media_get. Look at frames with preview_frames before choosing shots when looks matter.
-4. project_create, then build the edit with timeline_edit. Send many operations in one call. The main track is magnetic: clips play back to back and gaps close. Overlays (B-roll, picture-in-picture, logos), audio (music, voiceover) and text sit on top at timeline times and follow their content when the main track changes.
-5. Smart edits: edit_remove_pauses and edit_remove_fillers for talking footage, edit_beat_montage to cut clips on the beat of a song.
-6. Check the result: timeline_get, preview_frames with a project to see composed frames, render_start quality "draft" for a fast watchable link.
-7. render_start quality "final" and give the user the link.
+2. Each file is analyzed in the background: shots with visual descriptions, moments inside still shots and screen recordings (one per screen or step), speech transcript with word timings, music tempo and beats, quiet parts. media_get with wait_seconds waits for it.
+3. Before building, read edit_guide: "principles" and the recipe for the format (screen_recording, product_ad, talking_head, montage). The user expects a premium, creative result, not a plain cut.
+4. Find material with media_search and media_get. Look at frames with preview_frames before choosing shots when looks matter.
+5. project_create, then build the edit with timeline_edit. Send many operations in one call. The main track is magnetic: clips play back to back and gaps close. Overlays, audio, text and blurs sit on top at timeline times and follow their content when the main track changes. Clips can zoom and pan (zoom keyframes) and float as a card over a color or gradient background (fit card).
+6. Smart edits: edit_remove_pauses and edit_remove_fillers for talking footage, edit_beat_montage to cut clips on the beat of a song.
+7. Check the result: timeline_get, preview_frames with a project at each text change and zoom, render_start quality "draft" for a fast watchable link. Fix what looks off before the final.
+8. render_start quality "final" and give the user the link.
 
 Times are seconds (12.5) or timecodes ("0:12.5"). in/out are times inside a source file. start/end/at are times on the edited timeline. Every edit is undoable with timeline_undo.`
 
@@ -90,6 +92,23 @@ export const registerTools = Effect.gen(function*() {
       }
       return lines.join("\n")
     })
+
+  // ------------------------------------------------------------------ guide
+
+  yield* registerTool({
+    name: "edit_guide",
+    title: "Editing guide",
+    description:
+      "How to make an edit look premium: pacing, motion, typography, color, and step-by-step recipes with example operations. Read principles plus the recipe for the format before building an edit.",
+    params: Schema.Struct({
+      topic: d(
+        Schema.Literals(GUIDE_TOPICS),
+        "principles (always), screen_recording (app or website demos), product_ad (B-roll ads), talking_head, montage (music-driven), text (typography)."
+      )
+    }),
+    readOnly: true,
+    handle: ({ topic }) => Effect.succeed(GUIDE[topic])
+  })
 
   // ---------------------------------------------------------------- projects
 
@@ -282,10 +301,18 @@ export const registerTools = Effect.gen(function*() {
             const step = chosen.length / MAX_FRAMES
             chosen = Array.from({ length: MAX_FRAMES }, (_, i) => chosen[Math.floor(i * step)]!)
           }
-          picks = chosen.map((s) => ({
-            time: s.keyframes[Math.floor(s.keyframes.length / 2)] ?? (s.start + s.end) / 2,
-            caption: `shot ${s.index} (${formatRange(s.start, s.end)})`
-          }))
+          // A shot split into moments (a screen recording) shows one frame per moment.
+          picks = chosen.flatMap((s) =>
+            s.moments && s.moments.length > 0
+              ? s.moments.map((m, i) => ({
+                time: m.keyframe,
+                caption: `shot ${s.index} moment ${i + 1} (${formatRange(m.start, m.end)})`
+              }))
+              : [{
+                time: s.keyframes[Math.floor(s.keyframes.length / 2)] ?? (s.start + s.end) / 2,
+                caption: `shot ${s.index} (${formatRange(s.start, s.end)})`
+              }]
+          )
         }
       }
       picks = picks.slice(0, MAX_FRAMES)
@@ -328,7 +355,7 @@ export const registerTools = Effect.gen(function*() {
     name: "preview_frames",
     title: "Look at frames",
     description:
-      "See still frames. With media: frames of a source file (default one per shot, or at the given source times). With project: frames of the edited video exactly as it will render, with overlays, text and captions (default 6 evenly spaced, or at the given timeline times). Use it to check looks, framing and text placement.",
+      "See still frames. With media: frames of a source file (default one per shot and one per moment of a screen recording, or at the given source times). With project: frames of the edited video exactly as it will render, with overlays, text and captions (default 6 evenly spaced, or at the given timeline times). Use it to check looks, framing and text placement.",
     params: Schema.Struct({
       media: opt(MediaId),
       project: opt(ProjectId),

@@ -2,7 +2,7 @@
  * Shot detection from FFmpeg's `scdet` filter output, plus keyframe planning.
  * Pure functions: input is the per-frame scene score and motion (MAFD).
  */
-import type { Shot } from "../domain/Media.ts"
+import type { Moment, Shot } from "../domain/Media.ts"
 
 export interface FrameStat {
   readonly t: number
@@ -85,6 +85,70 @@ export const planKeyframes = (start: number, end: number): Array<number> => {
   return Array.from({ length: count }, (_, i) => at((i + 0.5) / count))
 }
 
+const MOMENT_ACTIVE = 0.8
+/** A burst must peak this high, so compression noise is never a step. */
+const MOMENT_PEAK = 2
+const MOMENT_MIN = 1
+const MOMENT_MAX = 12
+
+/**
+ * Splits a mostly still shot at bursts of change: screen recordings, slides,
+ * tripod shots where something appears. Returns nothing when the shot is one
+ * continuous scene, so ordinary camera footage keeps whole shots.
+ */
+export const detectMoments = (frames: ReadonlyArray<FrameStat>, start: number, end: number): Array<Moment> => {
+  if (end - start < 2 * MOMENT_MIN + 0.5) return []
+  const inside = frames.filter((f) => f.t > start + 0.05 && f.t < end - 0.02)
+  if (inside.length < 10) return []
+  // Smooth over a few frames so one noisy frame is not a burst.
+  const smooth = inside.map((_, i) => {
+    let sum = 0
+    let count = 0
+    for (let j = Math.max(0, i - 2); j <= Math.min(inside.length - 1, i + 2); j++) {
+      sum += inside[j]!.mafd
+      count++
+    }
+    return sum / count
+  })
+  // Bursts must stand out from the shot's own noise floor.
+  const median = [...smooth].sort((a, b) => a - b)[Math.floor(smooth.length / 2)]!
+  const active = Math.max(MOMENT_ACTIVE, median * 2.5)
+  const activeShare = smooth.filter((v) => v > active).length / smooth.length
+  // Constant motion means camera footage, not discrete steps.
+  if (activeShare > 0.6) return []
+  const bursts: Array<{ start: number; end: number; peak: number }> = []
+  smooth.forEach((v, i) => {
+    if (v <= active) return
+    const t = inside[i]!.t
+    const last = bursts[bursts.length - 1]
+    if (last && t - last.end < 0.4) {
+      last.end = t
+      last.peak = Math.max(last.peak, v)
+    } else bursts.push({ start: t, end: t, peak: v })
+  })
+  const candidates = bursts
+    .filter((b) => b.peak >= Math.max(MOMENT_PEAK, median * 4))
+    .filter((b) => b.start - start >= MOMENT_MIN * 0.8 && end - b.start >= MOMENT_MIN * 0.8)
+    .sort((a, b) => b.peak - a.peak)
+  const cuts: Array<{ t: number; settled: number }> = []
+  for (const b of candidates) {
+    if (cuts.length >= MOMENT_MAX - 1) break
+    const t = Math.max(start, b.start - 0.05)
+    if (cuts.every((c) => Math.abs(c.t - t) >= MOMENT_MIN)) cuts.push({ t, settled: b.end })
+  }
+  if (cuts.length === 0) return []
+  cuts.sort((a, b) => a.t - b.t)
+  const bounds = [{ t: start, settled: start }, ...cuts, { t: end, settled: end }]
+  const moments: Array<Moment> = []
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const s = bounds[i]!.t
+    const e = bounds[i + 1]!.t
+    const settled = Math.min(e - 0.1, Math.max(s, bounds[i]!.settled + 0.15))
+    moments.push({ start: round3(s), end: round3(e), keyframe: round3(settled + (e - settled) * 0.5) })
+  }
+  return moments
+}
+
 export const buildShots = (
   frames: ReadonlyArray<FrameStat>,
   duration: number,
@@ -100,13 +164,15 @@ export const buildShots = (
     // Skip the frames at the cut itself so the cut does not count as motion.
     const inside = frames.filter((f) => f.t > start + 0.05 && f.t < end - 0.02)
     const mafd = inside.length ? inside.reduce((s, f) => s + f.mafd, 0) / inside.length : 0
+    const moments = detectMoments(frames, start, end)
     shots.push({
       index: shots.length + 1,
       start: round3(start),
       end: round3(end),
       motion: Math.round(Math.min(1, mafd / 10) * 100) / 100,
       motionLabel: motionLabel(mafd),
-      keyframes: planKeyframes(start, end)
+      keyframes: moments.length > 0 ? moments.map((m) => m.keyframe) : planKeyframes(start, end),
+      ...(moments.length > 0 ? { moments } : {})
     })
   }
   return shots

@@ -10,6 +10,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
+COPY assets ./assets
 
 EXPOSE 8080
 CMD ["node", "src/main.ts"]

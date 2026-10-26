@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import { Context, Effect, FileSystem, Layer, Option, Schedule, Semaphore } from "effect"
 import { OwlConfig } from "../Config.ts"
 import { OwlError, type StorageError } from "../domain/Errors.ts"
@@ -57,10 +58,19 @@ export interface RendererShape {
 const INDEX_KEY = "db/renders.json"
 const DRAFT_SIDE = 960
 
+/** Fonts shipped with owl (assets/fonts), so text looks the same on every machine. */
+const FONTS_DIR = fileURLToPath(new URL("../../assets/fonts", import.meta.url))
+
 const scaledCanvas = (output: OutputSettings, maxSide: number): Canvas => {
   const scale = Math.min(1, maxSide / Math.max(output.width, output.height))
   const even = (x: number) => Math.max(2, Math.round((x * scale) / 2) * 2)
-  return { width: even(output.width), height: even(output.height), fps: output.fps, background: output.background }
+  return {
+    width: even(output.width),
+    height: even(output.height),
+    fps: output.fps,
+    background: output.background,
+    gradient: output.gradient
+  }
 }
 
 const mediaIds = (t: Timeline) => new Set([...t.main, ...t.overlays, ...t.audio].map((x) => x.mediaId))
@@ -163,6 +173,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             source: (id) => sourceMap.get(id)!,
             canvas: options.canvas,
             assPath,
+            fontsDir: FONTS_DIR,
             speech: words.map((w) => ({ start: w.s, end: w.e })),
             quality: options.quality,
             output: options.output,
