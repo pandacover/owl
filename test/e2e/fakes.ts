@@ -175,10 +175,16 @@ export const fakeClaude = () => {
     }
     const content = body.messages[0]!.content
     requests.push({ model: body.model, images: content.filter((c) => c.type === "image").length })
-    const shots = content.flatMap((c) => {
+    const shots: Array<number> = []
+    const frames = new Map<number, number>()
+    for (const c of content) {
       const m = c.type === "text" ? /^Shot (\d+) /.exec(c.text ?? "") : null
-      return m ? [Number(m[1])] : []
-    })
+      if (m) shots.push(Number(m[1]))
+      else if (c.type === "image" && shots.length > 0) {
+        const shot = shots[shots.length - 1]!
+        frames.set(shot, (frames.get(shot) ?? 0) + 1)
+      }
+    }
     const json = {
       shots: shots.map((shot) => ({
         shot,
@@ -190,7 +196,8 @@ export const fakeClaude = () => {
         on_screen_text: "",
         tags: shot % 2 === 1 ? ["colorful", "pattern"] : ["car", "sunset", "driving"],
         appeal: 3 + (shot % 2),
-        issues: ""
+        issues: "",
+        frame_notes: Array.from({ length: frames.get(shot) ?? 0 }, (_, i) => `Frame ${i + 1} of shot ${shot}.`)
       }))
     }
     return Response.json({

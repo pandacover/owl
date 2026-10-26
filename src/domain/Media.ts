@@ -60,6 +60,20 @@ export interface ShotCaption {
   /** 1 to 5, how usable and attractive the shot is. */
   readonly appeal: number
   readonly issues: string
+  /** One short note per keyframe, in keyframe order: what is visible then and what just changed. */
+  readonly notes?: ReadonlyArray<string> | undefined
+}
+
+/**
+ * A step inside a mostly still shot, such as one screen of a screen recording.
+ * Moments split where the picture changes after a still stretch (a tap, a page
+ * change, a scroll), so each one shows an action and its result.
+ */
+export interface Moment {
+  readonly start: number
+  readonly end: number
+  /** Saved frame for this moment, after the change has settled. */
+  readonly keyframe: number
 }
 
 export interface Shot {
@@ -72,8 +86,9 @@ export interface Shot {
   readonly motionLabel: "static" | "low" | "medium" | "high"
   /** Average brightness 0 to 1, from the analysis pass. */
   readonly brightness?: number | undefined
-  /** Times of frames saved for this shot. */
+  /** Times of frames saved for this shot. With moments, one per moment. */
   readonly keyframes: ReadonlyArray<number>
+  readonly moments?: ReadonlyArray<Moment> | undefined
   readonly caption?: ShotCaption | undefined
 }
 

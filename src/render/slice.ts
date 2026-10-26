@@ -1,5 +1,9 @@
 import { round3 } from "../domain/Time.ts"
-import { clipDuration, type MainClip, placeMain, type Timeline } from "../domain/Timeline.ts"
+import { clipDuration, type MainClip, placeMain, type Timeline, type ZoomKey } from "../domain/Timeline.ts"
+
+/** Zoom keys are relative to the clip start, so a clip that loses its head moves its keys earlier. */
+const shiftZoom = (zoom: ReadonlyArray<ZoomKey> | undefined, by: number): ReadonlyArray<ZoomKey> | undefined =>
+  zoom && by > 0 ? zoom.map((k) => ({ ...k, at: round3(k.at - by) })) : zoom
 
 /**
  * A copy of the timeline that only covers [start, end), shifted to start at 0.
@@ -16,6 +20,7 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
       ...c,
       in: round3(c.in + headCut * c.speed),
       out: round3(c.out - tailCut * c.speed),
+      zoom: shiftZoom(c.zoom, headCut),
       // A transition that crosses the slice edge becomes a hard cut.
       transition: main.length === 0 || headCut > 0 ? undefined : c.transition
     }
@@ -36,7 +41,14 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
     const s = Math.max(0, o.start - start)
     const inT = o.in + skip * o.speed
     const out = Math.min(o.out, inT + (length - s) * o.speed)
-    return [{ ...o, start: round3(s), in: round3(inT), out: round3(out), fadeIn: skip > 0 ? 0 : o.fadeIn }]
+    return [{
+      ...o,
+      start: round3(s),
+      in: round3(inT),
+      out: round3(out),
+      fadeIn: skip > 0 ? 0 : o.fadeIn,
+      zoom: shiftZoom(o.zoom, skip)
+    }]
   })
 
   const audio = timeline.audio.flatMap((a) => {
@@ -67,5 +79,11 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
       }]
   )
 
-  return { ...timeline, main: fixed, overlays, audio, texts }
+  const blurs = (timeline.blurs ?? []).flatMap((b) =>
+    b.end <= start || b.start >= end
+      ? []
+      : [{ ...b, start: round3(Math.max(0, b.start - start)), end: round3(Math.min(length, b.end - start)) }]
+  )
+
+  return { ...timeline, main: fixed, overlays, audio, texts, blurs }
 }

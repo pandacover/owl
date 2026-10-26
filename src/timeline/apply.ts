@@ -1,6 +1,8 @@
 import { formatTime, parseTime, round3, type TimeInput } from "../domain/Time.ts"
 import {
   type AudioItem,
+  type BlurRegion,
+  type CardSettings,
   clipDuration,
   type MainClip,
   mainDuration,
@@ -12,7 +14,8 @@ import {
   type TextPosition,
   type TextStyle,
   type Timeline,
-  type Transition
+  type Transition,
+  type ZoomKey
 } from "../domain/Timeline.ts"
 import type { ClipInput, EditOp } from "./Ops.ts"
 
@@ -27,7 +30,12 @@ export interface MediaInfo {
   readonly fps: number
   readonly hasAudio: boolean
   readonly hasTranscript: boolean
-  readonly shots: ReadonlyArray<{ readonly index: number; readonly start: number; readonly end: number }>
+  readonly shots: ReadonlyArray<{
+    readonly index: number
+    readonly start: number
+    readonly end: number
+    readonly moments?: ReadonlyArray<{ readonly start: number; readonly end: number }> | undefined
+  }>
 }
 
 export interface EditContext {
@@ -72,8 +80,9 @@ interface Draft {
   overlays: Array<Overlay>
   audio: Array<AudioItem>
   texts: Array<TextItem>
+  blurs: Array<BlurRegion>
   captions: Timeline["captions"]
-  counters: Mutable<Project["counters"]>
+  counters: Mutable<Required<Project["counters"]>>
   outputLocked: boolean
   notes: Array<string>
   /** New clip id to the id it was split from, for the current operation. */
@@ -92,6 +101,7 @@ const resolveRange = (
   input: {
     readonly media: string
     readonly shot?: number
+    readonly moment?: number
     readonly in?: TimeInput
     readonly out?: TimeInput
     readonly duration?: number
@@ -117,6 +127,21 @@ const resolveRange = (
     }
     start = shot!.start
     end = shot!.end
+    if (input.moment !== undefined) {
+      const moments = shot!.moments ?? []
+      const moment = moments[input.moment - 1]
+      if (!moment) {
+        fail(
+          moments.length === 0
+            ? `Shot ${input.shot} of ${media.id} has no moments. Use in and out instead.`
+            : `Shot ${input.shot} of ${media.id} has moments 1 to ${moments.length}, not ${input.moment}.`
+        )
+      }
+      start = moment!.start
+      end = moment!.end
+    }
+  } else if (input.moment !== undefined) {
+    fail("moment needs shot as well.")
   }
   const inT = optTime(input.in, "in") ?? start
   let outT = optTime(input.out, "out") ?? (input.duration !== undefined ? inT + input.duration * speed : end)
@@ -134,8 +159,23 @@ const resolveRange = (
 const transitionOf = (input: ClipInput["transition"]): Transition | undefined =>
   input ? { type: input.type, duration: round3(input.duration ?? DEFAULT_TRANSITION) } : undefined
 
+const zoomOf = (input: ClipInput["zoom"] | null, length: number): ReadonlyArray<ZoomKey> | undefined => {
+  if (!input || input.length === 0) return undefined
+  const keys = [...input]
+    .map((k) => ({ at: round3(k.at), scale: round3(k.scale), x: round3(k.x ?? 0.5), y: round3(k.y ?? 0.5) }))
+    .sort((a, b) => a.at - b.at)
+  if (keys[0]!.at > length + EPS) fail(`zoom starts at ${keys[0]!.at}s, after the clip ends (${round3(length)}s long). at is seconds from the clip start.`)
+  return keys
+}
+
+const cardOf = (input: ClipInput["card"]): CardSettings | undefined =>
+  input ? { ...(input.scale !== undefined ? { scale: input.scale } : {}), ...(input.y !== undefined ? { y: input.y } : {}) } : undefined
+
 const DEFAULT_POSITION: Record<TextStyle, TextPosition> = {
   title: "center",
+  headline: "center",
+  kicker: "top",
+  highlight: "center",
   subtitle: "bottom",
   lower_third: "lower_left",
   caption: "bottom",
@@ -161,8 +201,9 @@ export const applyEdits = (project: Project, ops: ReadonlyArray<EditOp>, ctx: Ed
     overlays: [...t.overlays],
     audio: [...t.audio],
     texts: [...t.texts],
+    blurs: [...(t.blurs ?? [])],
     captions: t.captions,
-    counters: { ...project.counters },
+    counters: { ...project.counters, b: project.counters.b ?? 0 },
     outputLocked: project.outputLocked,
     notes: [],
     lineage: new Map()
@@ -191,6 +232,7 @@ export const applyEdits = (project: Project, ops: ReadonlyArray<EditOp>, ctx: Ed
       overlays: draft.overlays,
       audio: draft.audio,
       texts: draft.texts,
+      ...(draft.blurs.length > 0 ? { blurs: draft.blurs } : {}),
       captions: draft.captions
     },
     counters: draft.counters,
@@ -287,6 +329,16 @@ const remapItems = (
     }
     return [{ ...x, start: s.time, end }]
   })
+  draft.blurs = draft.blurs.flatMap((x) => {
+    const s = map(x.start)
+    const e = map(x.end - EPS)
+    const end = e.removed ? e.time : round3(e.time + EPS)
+    if (end - s.time < 0.05) {
+      removed.push(x.id)
+      return []
+    }
+    return [{ ...x, start: s.time, end }]
+  })
   draft.audio = draft.audio.map((a) => ({ ...a, start: map(a.start).time }))
   if (removed.length > 0) draft.notes.push(`Removed ${removed.join(", ")} because the content under them was cut.`)
 }
@@ -315,6 +367,7 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
   if (media.kind === "audio") fail(`${media.id} is audio only. Add it with add_audio instead.`)
   const speed = media.kind === "image" ? 1 : input.speed ?? 1
   const range = resolveRange(input, media, speed)
+  if (input.card && (input.fit ?? "auto") !== "card") fail("card settings only apply with fit: card.")
   return {
     id: nextId(draft, "c"),
     mediaId: media.id,
@@ -323,7 +376,9 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
     speed,
     volume: input.volume ?? 1,
     fit: input.fit ?? "auto",
-    transition: transitionOf(input.transition)
+    transition: transitionOf(input.transition),
+    zoom: zoomOf(input.zoom, (range.out - range.in) / speed),
+    card: cardOf(input.card)
   }
 }
 
@@ -379,17 +434,31 @@ const findItem = (draft: Draft, id: string) => {
     ? draft.audio
     : kind === "t"
     ? draft.texts
+    : kind === "b"
+    ? draft.blurs
     : undefined
-  const index = list?.findIndex((x) => x.id === id) ?? -1
+  const index = (list as ReadonlyArray<{ readonly id: string }> | undefined)?.findIndex((x) => x.id === id) ?? -1
   if (!list || index < 0) fail(`No item "${id}". Use timeline_get to see current ids.`)
-  return { kind: kind as "c" | "o" | "a" | "t", index }
+  return { kind: kind as "c" | "o" | "a" | "t" | "b", index }
 }
 
-const ALLOWED: Record<"c" | "o" | "a" | "t", ReadonlyArray<string>> = {
-  c: ["in", "out", "speed", "volume", "fit", "transition"],
-  o: ["in", "out", "start", "duration", "speed", "volume", "fit", "layout", "fade_in", "fade_out"],
+const ALLOWED: Record<"c" | "o" | "a" | "t" | "b", ReadonlyArray<string>> = {
+  c: ["in", "out", "speed", "volume", "fit", "card", "zoom", "transition"],
+  o: ["in", "out", "start", "duration", "speed", "volume", "fit", "card", "zoom", "layout", "fade_in", "fade_out"],
   a: ["in", "out", "start", "duration", "volume", "fade_in", "fade_out", "duck", "fill"],
-  t: ["start", "end", "duration", "text", "style", "position", "color", "animation"]
+  t: ["start", "end", "duration", "text", "style", "position", "color", "background", "font", "y", "animation"],
+  b: ["start", "end", "duration", "x", "y", "w", "h"]
+}
+
+/** Default end of a blur: the end of the main clip under `start`, or 3 seconds. */
+const blurEnd = (draft: Draft, start: number) => {
+  const under = placeMain(draft.main).find((p) => p.start <= start + EPS && p.end > start + EPS)
+  return round3(under ? under.end : start + 3)
+}
+
+const checkBox = (b: { x: number; y: number; w: number; h: number }) => {
+  if (b.w < 0.005 || b.h < 0.005) fail("w and h must be larger than 0.")
+  if (b.x + b.w > 1.001 || b.y + b.h > 1.001) fail("The box must fit inside the frame: x + w and y + h must be at most 1.")
 }
 
 const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
@@ -482,6 +551,7 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
       if (media.kind === "audio") fail(`${media.id} is audio only. Use add_audio.`)
       const speed = op.speed ?? 1
       const range = resolveRange(op, media, speed)
+      if (op.card && op.fit !== "card") fail("card settings only apply with fit: card.")
       const overlay: Overlay = {
         id: nextId(draft, "o"),
         mediaId: media.id,
@@ -493,7 +563,9 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
         fit: op.fit ?? "auto",
         volume: op.volume ?? 0,
         fadeIn: op.fade_in ?? 0,
-        fadeOut: op.fade_out ?? 0
+        fadeOut: op.fade_out ?? 0,
+        zoom: zoomOf(op.zoom, (range.out - range.in) / (media.kind === "image" ? 1 : speed)),
+        card: cardOf(op.card)
       }
       draft.overlays.push(overlay)
       const end = overlay.start + clipDuration(overlay)
@@ -538,10 +610,27 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
         style,
         position: op.position ?? DEFAULT_POSITION[style],
         color: op.color,
+        background: op.background,
+        font: op.font,
+        y: op.y,
         animation: op.animation ?? "fade"
       }
       draft.texts.push(item)
       return `Added ${item.id} "${truncate(item.text, 40)}" at ${formatTime(item.start)}–${formatTime(item.end)}.`
+    }
+    case "add_blur": {
+      const start = time(op.start, "start")
+      const end = op.end !== undefined
+        ? time(op.end, "end")
+        : op.duration !== undefined
+        ? round3(start + op.duration)
+        : blurEnd(draft, start)
+      if (end - start < 0.05) fail("end must be after start.")
+      const box = { x: round3(op.x), y: round3(op.y), w: round3(op.w), h: round3(op.h) }
+      checkBox(box)
+      const item: BlurRegion = { id: nextId(draft, "b"), start, end, ...box }
+      draft.blurs.push(item)
+      return `Added blur ${item.id} at ${formatTime(start)}–${formatTime(end)}.`
     }
     case "update":
       return applyUpdate(draft, op, ctx)
@@ -556,6 +645,7 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
       draft.overlays = draft.overlays.filter((x) => !op.ids.includes(x.id))
       draft.audio = draft.audio.filter((x) => !op.ids.includes(x.id))
       draft.texts = draft.texts.filter((x) => !op.ids.includes(x.id))
+      draft.blurs = draft.blurs.filter((x) => !op.ids.includes(x.id))
       return `Deleted ${op.ids.join(", ")}.`
     }
     case "set_captions": {
@@ -587,7 +677,8 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
         width,
         height,
         fps: op.fps ?? draft.output.fps,
-        background: op.background ?? draft.output.background
+        background: op.background ?? draft.output.background,
+        gradient: op.gradient === undefined ? draft.output.gradient : op.gradient ?? undefined
       }
       draft.outputLocked = true
       return `Output is ${width}x${height} at ${draft.output.fps}fps.`
@@ -628,8 +719,11 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
         speed: media.kind === "image" ? 1 : speed,
         volume: op.volume ?? clip.volume,
         fit: op.fit ?? clip.fit,
-        transition: op.transition === undefined ? clip.transition : transitionOf(op.transition ?? undefined)
+        transition: op.transition === undefined ? clip.transition : transitionOf(op.transition ?? undefined),
+        zoom: op.zoom === undefined ? clip.zoom : zoomOf(op.zoom, (range.out - range.in) / speed),
+        card: op.card === undefined ? clip.card : cardOf(op.card)
       }
+      if (op.card && next.fit !== "card") fail("card settings only apply with fit: card.")
       if (next.in !== clip.in || next.out !== clip.out || next.speed !== clip.speed || op.transition !== undefined) {
         rippleMain(draft, () => {
           draft.main[index] = next
@@ -663,8 +757,11 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
         fit: op.fit ?? item.fit,
         layout: op.layout ?? item.layout,
         fadeIn: op.fade_in ?? item.fadeIn,
-        fadeOut: op.fade_out ?? item.fadeOut
+        fadeOut: op.fade_out ?? item.fadeOut,
+        zoom: op.zoom === undefined ? item.zoom : zoomOf(op.zoom, (range.out - range.in) / speed),
+        card: op.card === undefined ? item.card : cardOf(op.card)
       }
+      if (op.card && draft.overlays[index]!.fit !== "card") fail("card settings only apply with fit: card.")
       break
     }
     case "a": {
@@ -704,8 +801,26 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
         style: op.style ?? item.style,
         position: op.position ?? (op.style ? DEFAULT_POSITION[op.style] : item.position),
         color: op.color === undefined ? item.color : op.color ?? undefined,
+        background: op.background === undefined ? item.background : op.background ?? undefined,
+        font: op.font ?? item.font,
+        y: op.y === undefined ? item.y : op.y ?? undefined,
         animation: op.animation ?? item.animation
       }
+      break
+    }
+    case "b": {
+      const item = draft.blurs[index]!
+      const start = optTime(op.start, "start") ?? item.start
+      const end = op.end !== undefined
+        ? time(op.end, "end")
+        : op.duration !== undefined
+        ? round3(start + op.duration)
+        : round3(item.end + (start - item.start))
+      if (end - start < 0.05) fail("end must be after start.")
+      const box = { x: op.x ?? item.x, y: op.y ?? item.y, w: op.w ?? item.w, h: op.h ?? item.h }
+      if (op.y === null) fail("A blur needs a top edge; give y as a number.")
+      checkBox(box)
+      draft.blurs[index] = { ...item, start, end, ...box }
       break
     }
   }

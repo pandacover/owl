@@ -29,10 +29,10 @@ export const mediaLine = (record: MediaRecord): string => {
   return parts.join(" · ")
 }
 
-export const shotLine = (shot: Shot): string => {
+export const shotLine = (shot: Shot, full = false): string => {
   const c = shot.caption
   const head = `  shot ${shot.index}  ${formatRange(shot.start, shot.end)}  ${shot.motionLabel === "static" ? "static" : `${shot.motionLabel} motion`}`
-  if (!c) return head
+  if (!c) return head + momentLines(shot, full)
   const extras = [
     `appeal ${c.appeal}`,
     c.shotType.replace(/_/g, " "),
@@ -44,7 +44,19 @@ export const shotLine = (shot: Shot): string => {
     c.issues ? `Issues: ${c.issues}.` : "",
     c.tags.length ? `Tags: ${c.tags.join(", ")}.` : ""
   ].filter(Boolean).join(" ")
-  return `${head} · ${extras.join(" · ")} — ${tail}`
+  return `${head} · ${extras.join(" · ")} — ${tail}${momentLines(shot, full)}`
+}
+
+/** Moments of a shot, one per line, with what the frame shows. */
+const momentLines = (shot: Shot, full: boolean): string => {
+  const notes = shot.caption?.notes ?? []
+  if (shot.moments && shot.moments.length > 0) {
+    return shot.moments
+      .map((m, i) => `\n      moment ${i + 1}  ${formatRange(m.start, m.end)}${notes[i] ? `  ${notes[i]}` : ""}`)
+      .join("")
+  }
+  if (!full || notes.length < 2) return ""
+  return shot.keyframes.map((t, i) => notes[i] ? `\n      at ${formatTime(t)}  ${notes[i]}` : "").join("")
 }
 
 export const describeMedia = (record: MediaRecord, analysis: Analysis | undefined, full: boolean): string => {
@@ -62,7 +74,7 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
 
   if (analysis.shots.length > 0 && p?.kind === "video") {
     lines.push("", `Shots (${analysis.shots.length}):`)
-    for (const shot of analysis.shots) lines.push(shotLine(shot))
+    for (const shot of analysis.shots) lines.push(shotLine(shot, full))
   } else if (p?.kind === "image" && analysis.shots[0]?.caption) {
     lines.push("", `Looks like: ${shotLine(analysis.shots[0]).replace(/^.*— /, "")}`)
   }
@@ -134,7 +146,11 @@ export const searchText = (query: string, hits: ReadonlyArray<SearchHit>, names:
   const lines = [`${hits.length} result${hits.length === 1 ? "" : "s"} for ${q(query, 80)}:`]
   for (const h of hits) {
     const image = h.kind === "shot" && h.end === 0
-    const where = image ? "image" : h.kind === "shot" ? `shot ${h.shot}  ${formatRange(h.start, h.end)}` : `speech  ${formatRange(h.start, h.end)}`
+    const where = image
+      ? "image"
+      : h.kind === "shot"
+      ? `shot ${h.shot}${h.moment ? ` moment ${h.moment}` : ""}  ${formatRange(h.start, h.end)}`
+      : `speech  ${formatRange(h.start, h.end)}`
     const extras = h.kind === "shot" && !image ? ` · ${h.motion === "static" ? "static" : `${h.motion} motion`}` : ""
     const appeal = h.appeal ? ` · appeal ${h.appeal}` : ""
     lines.push(

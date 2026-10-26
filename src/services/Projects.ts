@@ -244,8 +244,14 @@ export class Projects extends Context.Service<Projects, ProjectsShape>()("owl/Pr
             visual: (id, start, end) => {
               const shots = analyses.get(id)?.shots.filter((s) => s.caption && s.end > start + 0.05 && s.start < end - 0.05)
               if (!shots || shots.length === 0) return undefined
-              const parts = shots.slice(0, 3).map((s) => s.caption!.description)
-              return parts.join(" | ") + (shots.length > 3 ? ` | +${shots.length - 3} more shots` : "")
+              // For screen recordings and other still shots, the notes of the moments in range say more than the whole-shot summary.
+              const parts = shots.flatMap((s) => {
+                const notes = (s.moments ?? []).flatMap((m, i) =>
+                  m.end > start + 0.05 && m.start < end - 0.05 && s.caption!.notes?.[i] ? [s.caption!.notes[i]!] : []
+                )
+                return notes.length > 0 ? notes : [s.caption!.description]
+              })
+              return parts.slice(0, 4).join(" | ") + (parts.length > 4 ? ` | +${parts.length - 4} more` : "")
             }
           } satisfies DescribeSources
         })

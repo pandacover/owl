@@ -1,6 +1,7 @@
 import { round3 } from "../domain/Time.ts"
 import {
   type AudioItem,
+  type BlurRegion,
   clipDuration,
   type Fit,
   type Layout,
@@ -8,7 +9,8 @@ import {
   type Overlay,
   placeMain,
   type Timeline,
-  timelineDuration
+  timelineDuration,
+  type ZoomKey
 } from "../domain/Timeline.ts"
 
 /**
@@ -30,6 +32,7 @@ export interface Canvas {
   readonly height: number
   readonly fps: number
   readonly background: string
+  readonly gradient?: string | undefined
 }
 
 export interface Range {
@@ -43,6 +46,8 @@ export interface GraphInput {
   /** Frame size to render at. Drafts render smaller than the project output. */
   readonly canvas: Canvas
   readonly assPath?: string | undefined
+  /** Folder with the fonts the text styles use. */
+  readonly fontsDir?: string | undefined
   /** Timeline ranges with speech, used to duck music. */
   readonly speech: ReadonlyArray<Range>
   readonly quality: "draft" | "final"
@@ -99,14 +104,134 @@ const effectiveFit = (fit: Fit, src: SourceInfo, w: number, h: number): Exclude<
   return Math.abs(a / b - 1) < 0.08 ? "cover" : "blur"
 }
 
+/** Default size of a card relative to the frame. */
+export const CARD_SCALE = 0.8
+
+export interface FitOptions {
+  /** How many frames the result needs. Still layers repeat exactly this often, so the graph stays finite. */
+  readonly frames: number
+  readonly zoom?: ReadonlyArray<ZoomKey> | undefined
+  readonly card?: { readonly scale?: number | undefined; readonly y?: number | undefined } | undefined
+}
+
+/** Smoothly eased value of one zoom property at time T, as an FFmpeg expression. */
+const keyExpression = (keys: ReadonlyArray<ZoomKey>, pick: (k: ZoomKey) => number): string => {
+  let expr = n(pick(keys[keys.length - 1]!))
+  for (let i = keys.length - 2; i >= 0; i--) {
+    const a = keys[i]!
+    const b = keys[i + 1]!
+    const va = pick(a)
+    const vb = pick(b)
+    const span = Math.max(1e-3, b.at - a.at)
+    const u = `clip((T-${n(a.at)})/${n(span)},0,1)`
+    const segment = Math.abs(vb - va) < 1e-6 ? n(va) : `${n(va)}+${n(vb - va)}*${u}*${u}*(3-2*${u})`
+    expr = `if(lt(T,${n(b.at)}),${segment},${expr})`
+  }
+  return expr
+}
+
+/**
+ * Zoom and pan inside a frame, with sub-pixel precision so slow moves do not
+ * jitter. perspective maps a moving window of the source onto the frame.
+ */
+const zoomFilter = (keys: ReadonlyArray<ZoomKey>, fps: number): string | undefined => {
+  if (keys.length === 0 || keys.every((k) => Math.abs(k.scale - 1) < 1e-3)) return undefined
+  const sorted = [...keys].sort((a, b) => a.at - b.at)
+  const sub = (e: string) => e.replace(/T/g, `(in/${fps})`)
+  const s = sub(keyExpression(sorted, (k) => Math.max(1, k.scale)))
+  const x = sub(keyExpression(sorted, (k) => k.x))
+  const y = sub(keyExpression(sorted, (k) => k.y))
+  const left = `clip((${x})*W-W/(${s})/2,0,W-W/(${s}))`
+  const top = `clip((${y})*H-H/(${s})/2,0,H-H/(${s}))`
+  const right = `${left}+W/(${s})`
+  const bottom = `${top}+H/(${s})`
+  return `perspective=x0='${left}':y0='${top}':x1='${right}':y1='${top}':x2='${left}':y2='${bottom}':x3='${right}':y3='${bottom}':interpolation=cubic:eval=frame`
+}
+
+/** Repeats a single frame `frames` times at the canvas rate. */
+const repeatFrame = (frames: number, fps: number) => `loop=loop=${Math.max(1, Math.ceil(frames) + 2)}:size=1,setpts=N/(${fps}*TB)`
+
+/** A still background frame, repeated: the canvas color or gradient. */
+const background = (g: Graph, canvas: Canvas, w: number, h: number, frames: number): string => {
+  const out = g.label("bgf")
+  const source = canvas.gradient
+    ? `gradients=s=${w}x${h}:r=${canvas.fps}:c0=${hex(canvas.background)}:c1=${hex(canvas.gradient)}:nb_colors=2:x0=0:y0=0:x1=${w}:y1=${h}:speed=0.00001`
+    : `color=c=${hex(canvas.background)}:s=${w}x${h}:r=${canvas.fps}`
+  g.add(`${source},trim=end_frame=1,format=yuv420p,${repeatFrame(frames, canvas.fps)}[${out}]`)
+  return out
+}
+
+/** Media floating on the background with rounded corners and a soft shadow. */
+const cardInto = (g: Graph, input: string, src: SourceInfo, w: number, h: number, canvas: Canvas, options: FitOptions): string => {
+  const scale = Math.min(1, Math.max(0.2, options.card?.scale ?? CARD_SCALE))
+  const aspect = src.width > 0 && src.height > 0 ? src.width / src.height : w / h
+  let cw = w * scale
+  let ch = cw / aspect
+  if (ch > h * scale) {
+    ch = h * scale
+    cw = ch * aspect
+  }
+  cw = Math.max(2, Math.round(cw / 2) * 2)
+  ch = Math.max(2, Math.round(ch / 2) * 2)
+  const radius = Math.max(2, Math.round(Math.min(cw, ch) * 0.06))
+  const x = Math.round((w - cw) / 2)
+  const y = Math.round((h - ch) / 2 + (options.card?.y ?? 0) * h)
+  const blur = Math.max(4, Math.round(Math.min(w, h) * 0.025))
+  const pad = blur * 3
+  const roundness = `255*clip(${radius}+0.5-hypot(max(max(${radius}-X,X-(W-1-${radius})),0),max(max(${radius}-Y,Y-(H-1-${radius})),0)),0,1)`
+  const [shape, shapeB, mask, shadowAlpha, shadowColor, shadow, content, card, withShadow, out] = [
+    g.label("shape"),
+    g.label("shape"),
+    g.label("mask"),
+    g.label("sa"),
+    g.label("sc"),
+    g.label("shd"),
+    g.label("cc"),
+    g.label("card"),
+    g.label("ws"),
+    g.label("fit")
+  ]
+  const back = background(g, canvas, w, h, options.frames)
+  const repeat = repeatFrame(options.frames, canvas.fps)
+  // The mask and the shadow are drawn once and repeated, so they cost nothing per frame.
+  g.add(`color=c=white:s=${cw}x${ch}:r=${canvas.fps},trim=end_frame=1,format=gray,geq=lum='${roundness}',split[${shape}][${shapeB}]`)
+  g.add(`[${shape}]${repeat}[${mask}]`)
+  g.add(
+    `[${shapeB}]pad=${cw + pad * 2}:${ch + pad * 2}:${pad}:${pad}:color=black,gblur=sigma=${blur},geq=lum='lum(X,Y)*0.4'[${shadowAlpha}]`
+  )
+  g.add(`color=c=black:s=${cw + pad * 2}x${ch + pad * 2}:r=${canvas.fps},trim=end_frame=1,format=yuv420p[${shadowColor}]`)
+  g.add(`[${shadowColor}][${shadowAlpha}]alphamerge,format=yuva420p,${repeat}[${shadow}]`)
+  const zoom = options.zoom ? zoomFilter(options.zoom, canvas.fps) : undefined
+  g.add(`[${input}]scale=${cw}:${ch}:force_divisible_by=2,setsar=1${zoom ? `,${zoom}` : ""},format=yuva420p[${content}]`)
+  g.add(`[${content}][${mask}]alphamerge[${card}]`)
+  g.add(`[${back}][${shadow}]overlay=${x - pad}:${y - pad + Math.round(blur * 0.6)}:shortest=0[${withShadow}]`)
+  g.add(`[${withShadow}][${card}]overlay=${x}:${y}:shortest=1,setsar=1[${out}]`)
+  return out
+}
+
 /** Scales `input` into a w x h box. Returns the output label. */
-const fitInto = (g: Graph, input: string, fit: Exclude<Fit, "auto">, w: number, h: number, bg: string): string => {
+const fitInto = (
+  g: Graph,
+  input: string,
+  fit: Exclude<Fit, "auto">,
+  src: SourceInfo,
+  w: number,
+  h: number,
+  canvas: Canvas,
+  options: FitOptions
+): string => {
+  if (fit === "card") return cardInto(g, input, src, w, h, canvas, options)
   const out = g.label("fit")
-  const cover = `scale=${w}:${h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${w}:${h},setsar=1`
-  const contain = `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`
+  const zoom = options.zoom ? zoomFilter(options.zoom, canvas.fps) : undefined
+  const z = zoom ? `,${zoom}` : ""
+  const cover = `scale=${w}:${h}:force_original_aspect_ratio=increase:force_divisible_by=2${z},crop=${w}:${h},setsar=1`
+  const contain = `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1${z}`
   if (fit === "cover") g.add(`[${input}]${cover}[${out}]`)
   else if (fit === "contain") {
-    g.add(`[${input}]${contain},pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=${hex(bg)}[${out}]`)
+    const front = g.label("cf")
+    const back = background(g, canvas, w, h, options.frames)
+    g.add(`[${input}]${contain}[${front}]`)
+    g.add(`[${back}][${front}]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1[${out}]`)
   } else {
     const [a, b, back, front] = [g.label("b"), g.label("b"), g.label("b"), g.label("b")]
     const sw = Math.max(16, Math.round(w / 8 / 2) * 2)
@@ -173,7 +298,11 @@ const mainSegment = (
     : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs))
   const raw = g.label("raw")
   g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(clip.speed)},fps=${fps}[${raw}]`)
-  const fitted = fitInto(g, raw, effectiveFit(clip.fit, src, w, h), w, h, canvas.background)
+  const fitted = fitInto(g, raw, effectiveFit(clip.fit, src, w, h), src, w, h, canvas, {
+    frames,
+    zoom: clip.zoom,
+    card: clip.card
+  })
   const v = g.label("v")
   g.add(
     `[${fitted}]format=yuv420p,tpad=stop_mode=clone:stop=${frames},trim=end_frame=${frames},setpts=PTS-STARTPTS,settb=1/${fps}[${v}]`
@@ -212,7 +341,12 @@ const XFADE: Record<string, string> = {
   wipe_right: "wiperight",
   slide_left: "slideleft",
   slide_right: "slideright",
-  zoom_in: "zoomin"
+  zoom_in: "zoomin",
+  smooth_left: "smoothleft",
+  smooth_right: "smoothright",
+  smooth_up: "smoothup",
+  smooth_down: "smoothdown",
+  circle_open: "circleopen"
 }
 
 /** Joins main clips: hard cuts use concat, transitions use xfade and acrossfade. */
@@ -318,8 +452,12 @@ const overlayLayer = (
   const box = layoutBox(o.layout, src, canvas.width, canvas.height)
   const raw = g.label("or")
   g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(o.speed)},fps=${canvas.fps},trim=end=${n(seconds)}[${raw}]`)
-  const fit = box.fitted ? effectiveFit(o.fit, src, box.w, box.h) : "cover"
-  const fitted = fitInto(g, raw, fit, box.w, box.h, canvas.background)
+  const fit = box.fitted || o.fit === "card" ? effectiveFit(o.fit, src, box.w, box.h) : "cover"
+  const fitted = fitInto(g, raw, fit, src, box.w, box.h, canvas, {
+    frames: seconds * canvas.fps,
+    zoom: o.zoom,
+    card: o.card
+  })
   const fades: Array<string> = []
   if (o.fadeIn > 0) fades.push(`fade=t=in:d=${n(o.fadeIn)}:alpha=1`)
   if (o.fadeOut > 0) fades.push(`fade=t=out:st=${n(Math.max(0, seconds - o.fadeOut))}:d=${n(o.fadeOut)}:alpha=1`)
@@ -339,6 +477,21 @@ const overlayLayer = (
     )
     audio.push(a)
   }
+  return out
+}
+
+/** Blurs a rectangle of the frame between the region's start and end. */
+const blurLayer = (g: Graph, base: string, b: BlurRegion, canvas: Canvas): string => {
+  const even = (x: number) => Math.round(x / 2) * 2
+  const x = even(Math.min(Math.max(0, b.x), 0.98) * canvas.width)
+  const y = even(Math.min(Math.max(0, b.y), 0.98) * canvas.height)
+  const w = Math.max(4, Math.min(canvas.width - x, even(b.w * canvas.width)))
+  const h = Math.max(4, Math.min(canvas.height - y, even(b.h * canvas.height)))
+  const sigma = Math.max(4, Math.min(30, Math.round(Math.min(w, h) / 10)))
+  const [keep, patch, blurred, out] = [g.label("bk"), g.label("bp"), g.label("bb"), g.label("bl")]
+  g.add(`[${base}]split[${keep}][${patch}]`)
+  g.add(`[${patch}]crop=${w}:${h}:${x}:${y},gblur=sigma=${sigma}:steps=3[${blurred}]`)
+  g.add(`[${keep}][${blurred}]overlay=${x}:${y}:enable='between(t,${n(b.start)},${n(b.end)})'[${out}]`)
   return out
 }
 
@@ -423,9 +576,15 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
     if (o.start >= total) continue
     v = overlayLayer(g, v, o, input, manyInputs, extraAudio)
   }
+  for (const b of timeline.blurs ?? []) {
+    if (b.start >= total) continue
+    v = blurLayer(g, v, b, canvas)
+  }
   if (input.assPath) {
     const out = g.label("txt")
-    g.add(`[${v}]ass=filename=${input.assPath.replace(/[\\:']/g, "\\$&")}[${out}]`)
+    const escape = (p: string) => p.replace(/[\\:']/g, "\\$&")
+    const fonts = input.fontsDir ? `:fontsdir=${escape(input.fontsDir)}` : ""
+    g.add(`[${v}]ass=filename=${escape(input.assPath)}${fonts}[${out}]`)
     v = out
   }
   const vout = g.label("vout")

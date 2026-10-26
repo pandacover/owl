@@ -11,6 +11,8 @@ export interface SearchDoc {
   readonly start: number
   readonly end: number
   readonly shot?: number | undefined
+  /** 1-based moment inside the shot, for steps of screen recordings and still shots. */
+  readonly moment?: number | undefined
   readonly text: string
   readonly appeal?: number | undefined
   readonly motion?: Shot["motionLabel"] | undefined
@@ -93,6 +95,24 @@ const buildDocs = (record: MediaRecord, analysis: Analysis): Array<SearchDoc> =>
     appeal: shot.caption?.appeal,
     motion: shot.motionLabel
   })),
+  ...analysis.shots.flatMap((shot) =>
+    (shot.moments ?? []).flatMap((m, i): Array<SearchDoc> => {
+      const note = shot.caption?.notes?.[i]
+      return note
+        ? [{
+          mediaId: record.id,
+          kind: "shot",
+          start: m.start,
+          end: m.end,
+          shot: shot.index,
+          moment: i + 1,
+          text: `${note}. ${shot.caption?.setting ?? ""}`,
+          appeal: shot.caption?.appeal,
+          motion: shot.motionLabel
+        }]
+        : []
+    })
+  ),
   ...speechDocs(record.id, analysis)
 ]
 

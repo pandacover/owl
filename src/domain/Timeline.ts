@@ -8,8 +8,31 @@
  * All times are seconds. `in`/`out` are positions in the source media.
  */
 
-/** auto: cover when the aspect ratio matches the output, otherwise blur. */
-export type Fit = "auto" | "cover" | "contain" | "blur"
+/**
+ * auto: cover when the aspect ratio matches the output, otherwise blur.
+ * card: the media floats smaller than the frame with rounded corners and a
+ * soft shadow, over the output background (good for screen recordings).
+ */
+export type Fit = "auto" | "cover" | "contain" | "blur" | "card"
+
+/**
+ * One point of a zoom animation. `at` is seconds from the start of the clip on
+ * the timeline. `x`/`y` is the point of the source frame to center on, 0 to 1.
+ * Between points the zoom eases smoothly; before the first and after the last
+ * point it holds.
+ */
+/** Size and vertical offset of a card, as fractions of the frame. */
+export interface CardSettings {
+  readonly scale?: number | undefined
+  readonly y?: number | undefined
+}
+
+export interface ZoomKey {
+  readonly at: number
+  readonly scale: number
+  readonly x: number
+  readonly y: number
+}
 
 export type TransitionType =
   | "crossfade"
@@ -21,6 +44,11 @@ export type TransitionType =
   | "slide_right"
   | "zoom_in"
   | "dissolve"
+  | "smooth_left"
+  | "smooth_right"
+  | "smooth_up"
+  | "smooth_down"
+  | "circle_open"
 
 export interface Transition {
   readonly type: TransitionType
@@ -37,6 +65,8 @@ export interface MainClip {
   readonly fit: Fit
   /** Transition from the previous clip into this one. */
   readonly transition?: Transition | undefined
+  readonly zoom?: ReadonlyArray<ZoomKey> | undefined
+  readonly card?: CardSettings | undefined
 }
 
 export type Layout =
@@ -62,6 +92,8 @@ export interface Overlay {
   readonly volume: number
   readonly fadeIn: number
   readonly fadeOut: number
+  readonly zoom?: ReadonlyArray<ZoomKey> | undefined
+  readonly card?: CardSettings | undefined
 }
 
 export interface AudioItem {
@@ -81,8 +113,19 @@ export interface AudioItem {
   readonly duration?: number | undefined
 }
 
-export type TextStyle = "title" | "subtitle" | "lower_third" | "caption" | "cta" | "label"
+export type TextStyle =
+  | "title"
+  | "headline"
+  | "kicker"
+  | "subtitle"
+  | "lower_third"
+  | "caption"
+  | "highlight"
+  | "cta"
+  | "label"
 export type TextPosition = "center" | "top" | "bottom" | "lower_left" | "upper_left" | "upper_right"
+export type TextFont = "sans" | "display" | "serif"
+export type TextAnimation = "none" | "fade" | "pop" | "slide_up" | "words" | "typewriter" | "rise" | "zoom"
 
 export interface TextItem {
   readonly id: string
@@ -92,7 +135,24 @@ export interface TextItem {
   readonly style: TextStyle
   readonly position: TextPosition
   readonly color?: string | undefined
-  readonly animation: "none" | "fade" | "pop" | "slide_up"
+  /** Box color for highlight, cta, label and lower_third. */
+  readonly background?: string | undefined
+  /** Default depends on style. */
+  readonly font?: TextFont | undefined
+  /** Pins the top of the text at this height, 0 to 1. Overrides the vertical part of `position`. */
+  readonly y?: number | undefined
+  readonly animation: TextAnimation
+}
+
+/** A blurred rectangle, for hiding private details. Box values are fractions of the frame, 0 to 1. */
+export interface BlurRegion {
+  readonly id: string
+  readonly start: number
+  readonly end: number
+  readonly x: number
+  readonly y: number
+  readonly w: number
+  readonly h: number
 }
 
 export type CaptionStyle = "clean" | "bold" | "karaoke" | "boxed"
@@ -110,6 +170,8 @@ export interface OutputSettings {
   readonly height: number
   readonly fps: number
   readonly background: string
+  /** A second color: the background becomes a diagonal gradient from `background` to this. */
+  readonly gradient?: string | undefined
 }
 
 export interface Timeline {
@@ -118,6 +180,7 @@ export interface Timeline {
   readonly overlays: ReadonlyArray<Overlay>
   readonly audio: ReadonlyArray<AudioItem>
   readonly texts: ReadonlyArray<TextItem>
+  readonly blurs?: ReadonlyArray<BlurRegion> | undefined
   readonly captions?: CaptionSettings | undefined
 }
 
@@ -129,8 +192,14 @@ export interface Project {
   /** Increments on every change, including undo. */
   readonly version: number
   readonly timeline: Timeline
-  /** Counters for readable ids: c1, c2, o1, a1, t1. */
-  readonly counters: { readonly c: number; readonly o: number; readonly a: number; readonly t: number }
+  /** Counters for readable ids: c1, c2, o1, a1, t1, b1. */
+  readonly counters: {
+    readonly c: number
+    readonly o: number
+    readonly a: number
+    readonly t: number
+    readonly b?: number | undefined
+  }
   /** Whether output size was chosen explicitly. If not, the first clip decides it. */
   readonly outputLocked: boolean
   readonly undo: ReadonlyArray<HistoryEntry>
