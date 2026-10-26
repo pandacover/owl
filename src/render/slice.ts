@@ -6,32 +6,52 @@ const shiftZoom = (zoom: ReadonlyArray<ZoomKey> | undefined, by: number): Readon
   zoom && by > 0 ? zoom.map((k) => ({ ...k, at: round3(k.at - by) })) : zoom
 
 /**
+ * The range to slice for a still at `at`. Inside a transition it spans the
+ * transition with room on both sides, so the slice keeps the blend.
+ */
+export const stillRange = (timeline: Timeline, at: number, frame: number): { readonly from: number; readonly to: number } => {
+  for (const p of placeMain(timeline.main)) {
+    const d = p.clip.transition?.duration ?? 0
+    if (d > 0 && p.start <= at + 1e-6 && at < p.start + d) {
+      return { from: Math.max(0, p.start - d), to: Math.min(p.end, Math.max(at + frame * 2, p.start + 2 * d)) }
+    }
+  }
+  return { from: at, to: at + frame * 2 }
+}
+
+/**
  * A copy of the timeline that only covers [start, end), shifted to start at 0.
  * Used for partial previews and for single-frame stills.
  */
 export const sliceTimeline = (timeline: Timeline, start: number, end: number): Timeline => {
+  // Transitions that survive the cut keep their overlap. A dropped transition
+  // would play its clip after the previous one instead of over it, making the
+  // slice longer than asked, so its clip loses the overlapped head instead.
   const main: Array<MainClip> = []
+  let prevEnd = 0
   for (const p of placeMain(timeline.main)) {
     if (p.end <= start + 1e-6 || p.start >= end - 1e-6) continue
     const c = p.clip
-    const headCut = Math.max(0, start - p.start)
+    let headCut = Math.max(0, start - p.start)
     const tailCut = Math.max(0, p.end - end)
+    const relStart = Math.max(p.start, start) - start
+    const relEnd = Math.min(p.end, end) - start
+    const prev = main[main.length - 1]
+    const transition = c.transition
+    const keep = transition !== undefined && prev !== undefined && headCut === 0 &&
+      transition.duration * 2 <= relEnd - relStart + 1e-6 && transition.duration * 2 <= clipDuration(prev) + 1e-6
+    if (!keep && prev !== undefined && prevEnd > relStart + 1e-6) headCut += prevEnd - relStart
     const clip: MainClip = {
       ...c,
       in: round3(c.in + headCut * c.speed),
       out: round3(c.out - tailCut * c.speed),
       zoom: shiftZoom(c.zoom, headCut),
-      // A transition that crosses the slice edge becomes a hard cut.
-      transition: main.length === 0 || headCut > 0 ? undefined : c.transition
+      transition: keep ? transition : undefined
     }
-    if (clip.out - clip.in > 0.001) main.push(clip)
+    if (clip.out - clip.in <= 0.001) continue
+    main.push(clip)
+    prevEnd = relEnd
   }
-  // Clips that only survive inside a transition overlap can leave a transition longer than its clips.
-  const fixed = main.map((c, i) =>
-    c.transition && (c.transition.duration * 2 > clipDuration(c) || c.transition.duration * 2 > clipDuration(main[i - 1]!))
-      ? { ...c, transition: undefined }
-      : c
-  )
   const length = end - start
 
   const overlays = timeline.overlays.flatMap((o) => {
@@ -85,5 +105,5 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
       : [{ ...b, start: round3(Math.max(0, b.start - start)), end: round3(Math.min(length, b.end - start)) }]
   )
 
-  return { ...timeline, main: fixed, overlays, audio, texts, blurs }
+  return { ...timeline, main, overlays, audio, texts, blurs }
 }

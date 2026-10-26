@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest"
 import { emptyTimeline, type Timeline } from "../../src/domain/Timeline.ts"
 import { buildAss, captionLines, timelineWords } from "../../src/render/ass.ts"
 import { buildRender, duckExpression } from "../../src/render/graph.ts"
-import { sliceTimeline } from "../../src/render/slice.ts"
+import { sliceTimeline, stillRange } from "../../src/render/slice.ts"
+import { mainDuration } from "../../src/domain/Timeline.ts"
 import { detectMoments } from "../../src/analysis/shots.ts"
 
 const clip = (id: string, inT: number, out: number, extra: object = {}) =>
@@ -65,10 +66,11 @@ describe("render building blocks", () => {
     })
     expect(duration).toBe(7)
     const graph = args[args.indexOf("-filter_complex") + 1]!
-    expect(graph).toContain("xfade=transition=fade:duration=1:offset=3")
-    expect(graph).toContain("acrossfade=d=1")
+    expect(graph).toContain("xfade=transition=fade:duration=1:offset=0")
+    expect(graph).toContain("afade=t=out:d=1")
     expect(graph).toContain("eval=frame")
-    expect(args.filter((a) => a === "-i").length).toBe(3)
+    expect(args.filter((a) => a === "-i").length).toBe(5)
+    expect(args.filter((a) => a === "-vn").length).toBe(2)
   })
 
   it("shifts zoom keys and blurs when slicing", () => {
@@ -120,6 +122,29 @@ describe("render building blocks", () => {
   })
 })
 
+describe("slices with transitions", () => {
+  const t: Timeline = {
+    ...emptyTimeline,
+    main: [
+      clip("c1", 0, 5),
+      clip("c2", 10, 15, { transition: { type: "dissolve", duration: 1 } }),
+      clip("c3", 20, 24.2, { transition: { type: "fade_black", duration: 1 } }),
+      clip("c4", 30, 34.7, { transition: { type: "dissolve", duration: 1 } })
+    ]
+  }
+  it("keeps the asked length when a transition is cut", () => {
+    for (const [a, b] of [[3, 9], [10.5, 12.5], [9, 15.9], [4.5, 8.5], [0, 15.9]] as const) {
+      expect(mainDuration(sliceTimeline(t, a, b).main)).toBeCloseTo(b - a, 3)
+    }
+  })
+  it("widens still slices so a transition keeps its blend", () => {
+    expect(stillRange(t, 4.5, 1 / 30)).toEqual({ from: 3, to: 6 })
+    expect(stillRange(t, 2, 1 / 30).from).toBe(2)
+    const sliced = sliceTimeline(t, 3, 6)
+    expect(sliced.main[1]!.transition).toEqual({ type: "dissolve", duration: 1 })
+  })
+})
+
 describe("cinematic", () => {
   it("renders blank cards with a glow, a grade and thin text", () => {
     const t: Timeline = {
@@ -140,7 +165,7 @@ describe("cinematic", () => {
       output: "/x/out.mp4"
     })
     const graph = args[args.indexOf("-filter_complex") + 1]!
-    expect(args.filter((a) => a === "-i").length).toBe(1)
+    expect(args.filter((a) => a === "-i").length).toBe(2)
     expect(graph).toContain("geq=r=159:g=182:b=207")
     expect(graph).toContain("transition=hblur")
     expect(graph).toContain("vignette")

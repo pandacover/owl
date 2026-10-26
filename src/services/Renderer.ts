@@ -8,10 +8,10 @@ import { round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
 import { buildRender, type Canvas, type SourceInfo } from "../render/graph.ts"
-import { sliceTimeline } from "../render/slice.ts"
+import { sliceTimeline, stillRange } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
-import { Ffmpeg } from "./Ffmpeg.ts"
+import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
 import { MediaLibrary } from "./MediaLibrary.ts"
 import { Storage } from "./Storage.ts"
 
@@ -165,6 +165,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           readonly output: string
           readonly workDir: string
           readonly still?: boolean
+          readonly stillAt?: number
           readonly onProgress?: (p: number) => Effect.Effect<void>
         }
       ) =>
@@ -183,7 +184,8 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             speech: words.map((w) => ({ start: w.s, end: w.e })),
             quality: options.quality,
             output: options.output,
-            still: options.still
+            still: options.still,
+            stillAt: options.stillAt
           })
           yield* ffmpeg.run(args, {
             duration,
@@ -236,11 +238,11 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
         ).pipe(
           Effect.catch((error) => {
             const e = error as { readonly message: string; readonly stderr?: string }
-            const tail = e.stderr?.split("\n").filter(Boolean).slice(-4).join(" ")
+            const detail = errorSummary(e.stderr)
             return setJob({
               ...jobs.get(job.id)!,
               status: "failed",
-              error: tail ? `${e.message}: ${tail}` : e.message,
+              error: (detail ? `${e.message}: ${detail}` : e.message).slice(0, 800),
               finishedAt: new Date().toISOString()
             })
           })
@@ -311,12 +313,15 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                   const output = `${workDir}/still${i}.jpg`
                   const dir = `${workDir}/s${i}`
                   yield* fs.makeDirectory(dir).pipe(Effect.orDie)
-                  yield* renderFile(sliceTimeline(t, at, at + frame * 2), {
+                  // A frame inside a transition needs the transition's start in the slice to show the blend.
+                  const { from, to } = stillRange(t, at, frame)
+                  yield* renderFile(sliceTimeline(t, from, to), {
                     quality: "draft",
                     canvas,
                     output,
                     workDir: dir,
-                    still: true
+                    still: true,
+                    stillAt: at - from
                   })
                   return yield* fs.readFile(output).pipe(Effect.orDie)
                 }), { concurrency: 3 })

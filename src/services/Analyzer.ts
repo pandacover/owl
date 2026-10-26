@@ -8,7 +8,7 @@ import type { Analysis, AudioAnalysis, MediaRecord, Probe, Shot, Transcript } fr
 import { OwlError } from "../domain/Errors.ts"
 import { formatDuration, round1 } from "../domain/Time.ts"
 import { Activity } from "./Activity.ts"
-import { Ffmpeg } from "./Ffmpeg.ts"
+import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
 import { MediaLibrary } from "./MediaLibrary.ts"
 import { Search } from "./Search.ts"
 import { Storage } from "./Storage.ts"
@@ -389,8 +389,8 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
         }).pipe(
           Effect.catch((error) => {
             const e = error as { readonly message: string; readonly stderr?: string }
-            const tail = e.stderr?.split("\n").filter(Boolean).slice(-3).join(" ")
-            const message = tail ? `${e.message}. ${tail}` : e.message
+            const detail = errorSummary(e.stderr)
+            const message = detail ? `${e.message}. ${detail}` : e.message
             return library.update(id, (r) => ({ ...r, status: "failed", error: message })).pipe(Effect.ignore)
           })
         )
