@@ -16,6 +16,11 @@ const Volume = d(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 4 }
 const Speed = d(Schema.Finite.check(Schema.isBetween({ minimum: 0.1, maximum: 10 })), "Playback speed. 1 is normal, 2 is twice as fast.")
 const Seconds = d(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)), "Seconds.")
 const Color = d(Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)), "Hex color like #FFD400.")
+const BoxColor = d(
+  Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/)),
+  "Box behind the text, in this color. Works on every style; highlight, cta, label and lower_third always have a box and this sets its color (color only sets the letters). Add 2 hex digits for opacity, e.g. #0B0B0FB3 for a 70% dark box. Use a box whenever text sits on a light or busy picture."
+)
+const TextSize = d(Schema.Number.check(Schema.isBetween({ minimum: 0.4, maximum: 2.5 })), "Font size relative to the style's default (1). 0.8 is smaller, 1.3 bigger.")
 
 export const FitSchema = d(
   Schema.Literals(["auto", "cover", "contain", "blur", "card"]),
@@ -99,7 +104,8 @@ export const ClipInput = Schema.Struct({
   card: Schema.optionalKey(CardSchema),
   zoom: Schema.optionalKey(ZoomSchema),
   transition: Schema.optionalKey(TransitionSchema),
-  glow: Schema.optionalKey(d(Color, "Blank clips only: a soft light in this color drifting across the card, e.g. #9FB6CF on a near-black background."))
+  glow: Schema.optionalKey(d(Color, "Blank clips only: a soft light in this color drifting across the card, e.g. #9FB6CF on a near-black background.")),
+  freeze: Schema.optionalKey(d(Seconds, "Freeze frame: hold one frame for this many seconds instead of playing, silent. The frame is `in` if given, else the settled frame of `moment` (the one preview_frames shows), else the last frame of the shot or range. Zoom works on it. Typical: play a step, then freeze on its result for 1 to 2s."))
 }).annotate({ identifier: "Clip", description: "A piece of a media file for the main track." })
 export type ClipInput = typeof ClipInput.Type
 
@@ -197,8 +203,9 @@ export const AddText = d(
     duration: Schema.optionalKey(d(Seconds, "Instead of end. Default 3s.")),
     style: Schema.optionalKey(d(TextStyleSchema, "Default title.")),
     position: Schema.optionalKey(d(TextPositionSchema, "Default depends on style.")),
-    color: Schema.optionalKey(d(Color, "Text color.")),
-    background: Schema.optionalKey(d(Color, "Box color for highlight, cta, label and lower_third.")),
+    color: Schema.optionalKey(d(Color, "Color of the letters.")),
+    background: Schema.optionalKey(BoxColor),
+    size: Schema.optionalKey(TextSize),
     font: Schema.optionalKey(TextFontSchema),
     y: Schema.optionalKey(d(Fraction, "Pin the top of the text at this height (0 top, 1 bottom) instead of the position's default. Use it to stack a kicker above a headline.")),
     animation: Schema.optionalKey(d(TextAnimationSchema, "Default fade."))
@@ -235,6 +242,7 @@ export const Update = d(
     card: Schema.optionalKey(CardSchema),
     zoom: Schema.optionalKey(Schema.NullOr(ZoomSchema)),
     glow: Schema.optionalKey(Schema.NullOr(Color)),
+    freeze: Schema.optionalKey(d(Seconds, "Freeze frame clips: new hold length.")),
     transition: Schema.optionalKey(Schema.NullOr(TransitionSchema)),
     layout: Schema.optionalKey(LayoutSchema),
     fade_in: Schema.optionalKey(Seconds),
@@ -245,7 +253,8 @@ export const Update = d(
     style: Schema.optionalKey(TextStyleSchema),
     position: Schema.optionalKey(TextPositionSchema),
     color: Schema.optionalKey(Schema.NullOr(Color)),
-    background: Schema.optionalKey(Schema.NullOr(Color)),
+    background: Schema.optionalKey(Schema.NullOr(BoxColor)),
+    size: Schema.optionalKey(TextSize),
     font: Schema.optionalKey(TextFontSchema),
     animation: Schema.optionalKey(TextAnimationSchema),
     x: Schema.optionalKey(Fraction),

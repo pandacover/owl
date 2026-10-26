@@ -345,11 +345,17 @@ const mainSegment = (
     return { v, a: still ? "" : silence(g, seconds), frames }
   }
   const span = clip.out - clip.in
-  const index = src.kind === "image"
-    ? g.input(imageInput(src, fps, seconds))
-    : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs, "video"))
   const raw = g.label("raw")
-  g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(clip.speed)},fps=${fps}[${raw}]`)
+  if (clip.freeze !== undefined) {
+    // One frame, repeated before fitting so zoom moves across the hold.
+    const index = g.input(seekInput(src.path, clip.freeze, 2 / fps, manyInputs, "video"))
+    g.add(`[${index}:v]setpts=PTS-STARTPTS,fps=${fps},trim=end_frame=1,tpad=stop_mode=clone:stop=${frames}[${raw}]`)
+  } else {
+    const index = src.kind === "image"
+      ? g.input(imageInput(src, fps, seconds))
+      : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs, "video"))
+    g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(clip.speed)},fps=${fps}[${raw}]`)
+  }
   const fitted = fitInto(g, raw, effectiveFit(clip.fit, src, w, h), src, w, h, canvas, {
     frames,
     zoom: clip.zoom,
@@ -361,7 +367,7 @@ const mainSegment = (
   )
   if (still) return { v, a: "", frames }
   let a: string
-  if (src.kind !== "image" && src.hasAudio && clip.volume > 0) {
+  if (src.kind !== "image" && src.hasAudio && clip.volume > 0 && clip.freeze === undefined) {
     a = g.label("a")
     const fade = Math.min(0.012, seconds / 4)
     g.add(

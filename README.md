@@ -27,7 +27,7 @@ It is written in TypeScript with [Effect](https://effect.website) and runs on Cl
 | `media_list`, `media_get`, `media_transcript`, `media_delete` | Inspect media and analysis |
 | `media_search` | Search shots and speech by meaning |
 | `preview_frames` | Frames of a source file, or of the edit as rendered |
-| `project_create`, `project_list` | Projects |
+| `project_create`, `project_list`, `project_delete` | Projects |
 | `timeline_get`, `timeline_edit`, `timeline_undo` | Read and change the edit (batched, atomic operations) |
 | `edit_remove_pauses`, `edit_remove_fillers`, `edit_beat_montage` | Smart edits |
 | `render_start`, `render_status` | Draft and final renders with download links |

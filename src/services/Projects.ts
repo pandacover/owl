@@ -32,6 +32,7 @@ export interface ProjectsShape {
   readonly create: (name: string) => Effect.Effect<Project, StorageError>
   readonly list: Effect.Effect<ReadonlyArray<ProjectSummary>, StorageError>
   readonly get: (id: string) => Effect.Effect<Project, OwlError | StorageError>
+  readonly remove: (id: string) => Effect.Effect<Project, OwlError | StorageError>
   readonly edit: (
     id: string,
     ops: ReadonlyArray<EditOp>,
@@ -279,6 +280,17 @@ export class Projects extends Context.Service<Projects, ProjectsShape>()("owl/Pr
           }),
         list: readIndex,
         get,
+        remove: (id) =>
+          lockFor(id).withPermits(1)(Effect.gen(function*() {
+            const project = yield* get(id)
+            cache.delete(id)
+            yield* storage.remove(projectKey(id))
+            yield* indexLock.withPermits(1)(Effect.gen(function*() {
+              const index = yield* readIndex
+              yield* storage.writeJson(INDEX_KEY, index.filter((s) => s.id !== id))
+            }))
+            return project
+          })),
         edit,
         undo: (id, steps) => travel(id, steps, "undo"),
         redo: (id, steps) => travel(id, steps, "redo"),

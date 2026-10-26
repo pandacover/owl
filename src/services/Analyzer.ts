@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { createReadStream } from "node:fs"
 import { Context, Effect, FileSystem, Layer, Option, Semaphore, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OwlConfig } from "../Config.ts"
@@ -259,12 +261,44 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           return shots.map((s) => merged.has(s.index) ? { ...s, caption: merged.get(s.index) } : s)
         })
 
+      const fileHash = (path: string) =>
+        Effect.callback<string>((resume) => {
+          const hash = createHash("sha256")
+          const stream = createReadStream(path)
+          stream.on("data", (chunk) => hash.update(chunk))
+          stream.on("end", () => resume(Effect.succeed(hash.digest("hex"))))
+          stream.on("error", () => resume(Effect.succeed("")))
+          return Effect.sync(() => stream.destroy())
+        })
+
+      /** An earlier media item with the same file, if any. */
+      const earlierCopy = (id: string, hash: string) =>
+        library.list.pipe(Effect.map((all) =>
+          hash ? all.find((r) => r.id !== id && r.hash === hash && r.status !== "failed" && !r.duplicateOf) : undefined
+        ))
+
       const analyze = (id: string) =>
         Effect.gen(function*() {
           let record = yield* library.get(id)
           yield* library.update(id, (r) => ({ ...r, status: "importing", error: undefined }))
           if (!(yield* storage.exists(record.sourceKey))) yield* download(record)
           const source = yield* storage.localPath(record.sourceKey)
+          const hash = record.hash ?? (yield* fileHash(source))
+          const copy = yield* earlierCopy(id, hash)
+          if (copy) {
+            // The same file again: point to the earlier item instead of analyzing and storing it twice.
+            yield* library.update(id, (r) => ({
+              ...r,
+              hash,
+              duplicateOf: copy.id,
+              status: "failed",
+              stages: {},
+              error: `Same file as ${copy.id} ${JSON.stringify(copy.name)}, which was added earlier. Use ${copy.id}.`
+            }))
+            yield* storage.remove(record.sourceKey).pipe(Effect.ignore)
+            return
+          }
+          record = yield* library.update(id, (r) => ({ ...r, hash }))
           const probe = yield* ffmpeg.probe(source)
           if (!probe.hasVideo && !probe.hasAudio) {
             return yield* OwlError.invalid("The file has no video or audio stream.")
@@ -473,7 +507,16 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
         for (const record of yield* library.list) {
           if (record.status === "importing" || record.status === "analyzing") {
             yield* start(record.id)
-          } else if (record.status === "ready" && record.probe?.kind === "video") {
+          } else if (record.status === "ready" && !record.hash && storage.kind === "local") {
+            // Older items get a hash so new uploads of the same file are caught. On R2 this would download every source, so it is skipped.
+            yield* storage.localPath(record.sourceKey).pipe(
+              Effect.flatMap(fileHash),
+              Effect.flatMap((hash) => hash ? library.update(record.id, (r) => ({ ...r, hash })) : Effect.void),
+              Effect.ignore,
+              Effect.forkIn(scope)
+            )
+          }
+          if (record.status === "ready" && record.probe?.kind === "video") {
             const analysis = yield* library.analysis(record.id).pipe(Effect.orElseSucceed(() => Option.none<Analysis>()))
             if (Option.isSome(analysis) && analysis.value.detector !== DETECTOR && !running.has(record.id)) {
               running.add(record.id)

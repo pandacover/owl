@@ -93,7 +93,7 @@ Frame
 
 Structure
 1. Hook (0 to 2s): the best-looking screen, slow push-in, headline at the top.
-2. Steps (2 to 3s each, 3 or 4 of them): one moment each, punch-in on the tapped element, a short benefit line.
+2. Steps (2 to 3s each, 3 or 4 of them): one moment each, punch-in on the tapped element, a short benefit line. To dwell on a result, follow the step with a freeze clip of the same moment ({media, shot, moment, freeze: 1.5}); speed cannot go below 0.1, freeze holds a frame as long as you like.
 3. End card (2 to 2.5s): the app icon or home screen moment with a cta and the URL.
 
 Example ops (one timeline_edit call):
@@ -148,6 +148,7 @@ Stacking a kicker over a headline: same position, kicker y 0.04, headline y 0.06
 Benefit line over a card: highlight at the bottom, background in the brand color, white text.
 End card: title with the product name centered, cta below it (position bottom), both on the background.
 Contrast: set color to a dark tone (#1F1A17) on light backgrounds; leave white over video.
+Text over a light or busy screen (white app UIs): give it a box with background, which works on every style. #0B0B0FB3 is a 70% dark box for white text; a brand color box with white text reads at any size. size scales the style (0.8 smaller, 1.3 bigger). On box styles, color sets the letters and background sets the box.
 Length: headlines 3 to 6 words, benefit lines up to 5 words, nothing longer than 2 lines in 9:16.
 Check every text with preview_frames before rendering.`
 
