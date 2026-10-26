@@ -20,6 +20,6 @@
     "sourceMap": true,
     "noEmit": true
   },
-  "include": ["src", "test", "vitest.config.ts"],
+  "include": ["src", "test", "scripts", "vitest.config.ts"],
   "exclude": ["test/e2e/cloudflare.e2e.test.ts"]
 }

@@ -50,6 +50,10 @@ Try: *"Give me an upload link"*, upload a few clips, then *"Make a 20 second ver
 
 The container starts on the first request (this can take a little while) and goes to sleep after 15 minutes without activity. Long renders keep it awake until they finish. Everything is stored in R2, so nothing is lost when it sleeps.
 
+### Testing without Cloudflare
+
+To try owl before Cloudflare is ready, the `daytona` branch can deploy it to a Daytona sandbox. See [DAYTONA.md](DAYTONA.md).
+
 ### Choosing the vision model
 
 Shot descriptions use `claude-opus-5-5` by default, with server-side fallback enabled. For large libraries, `claude-haiku-5-5` costs much less. Change `OWL_VISION_MODEL` in `wrangler.jsonc` (or in the dashboard) to switch.

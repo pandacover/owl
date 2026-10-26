@@ -1,0 +1,37 @@
+name: Deploy to Daytona
+# Test deployment of owl on a Daytona sandbox. Runs on every push to the
+# daytona branch; re-run it from the Actions tab after changing secrets.
+on:
+  push:
+    branches: [daytona]
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: Delete the sandbox and its files, then create a fresh one
+        type: boolean
+        default: false
+
+concurrency:
+  group: daytona-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/daytona.ts
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          OWL_TOKEN: ${{ secrets.OWL_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          OWL_VISION_MODEL: ${{ vars.OWL_VISION_MODEL }}
+          DAYTONA_RESET: ${{ inputs.reset }}
