@@ -1,10 +1,12 @@
 import { round3 } from "../domain/Time.ts"
 import {
   type AudioItem,
+  BLANK,
   type BlurRegion,
   clipDuration,
   type Fit,
   type Layout,
+  type Look,
   type MainClip,
   type Overlay,
   placeMain,
@@ -33,6 +35,7 @@ export interface Canvas {
   readonly fps: number
   readonly background: string
   readonly gradient?: string | undefined
+  readonly look?: Look | undefined
 }
 
 export interface Range {
@@ -159,6 +162,35 @@ const background = (g: Graph, canvas: Canvas, w: number, h: number, frames: numb
     : `color=c=${hex(canvas.background)}:s=${w}x${h}:r=${canvas.fps}`
   g.add(`${source},trim=end_frame=1,format=yuv420p,${repeatFrame(frames, canvas.fps)}[${out}]`)
   return out
+}
+
+/**
+ * A blank title card: the background, with an optional soft light that
+ * drifts slowly. The light is drawn once at low size and scaled up, so it
+ * costs one overlay per frame.
+ */
+const blankCard = (g: Graph, canvas: Canvas, glow: string | undefined, frames: number): string => {
+  const { width: w, height: h, fps } = canvas
+  const bg = background(g, canvas, w, h, frames)
+  if (!glow) return bg
+  const c = glow.replace("#", "")
+  const [r, gg, b] = [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16))
+  const light = g.label("glow")
+  g.add(
+    `color=c=black:s=160x90:r=${fps},trim=end_frame=1,format=rgba,` +
+      `geq=r=${r}:g=${gg}:b=${b}:a='235*exp(-(pow((X-70)/60,2)+pow((Y-96)/30,2)))',` +
+      `scale=${Math.round(w * 1.4 / 2) * 2}:${h}:flags=bicubic,${repeatFrame(frames, fps)}[${light}]`
+  )
+  const out = g.label("card")
+  g.add(`[${bg}][${light}]overlay=x='-W*0.2+W*0.1*sin(2*PI*t/10)':y=0:shortest=1,format=yuv420p[${out}]`)
+  return out
+}
+
+/** Color grades for set_output look. Grain is temporal so it reads as film, not a dirty lens. */
+const LOOKS: Record<Look, string> = {
+  cinematic:
+    "eq=contrast=1.08:saturation=0.88:gamma=0.97,colorbalance=rs=-0.05:gs=-0.01:bs=0.06:rh=0.05:gh=0.01:bh=-0.05,vignette=angle=0.55,noise=alls=4:allf=t",
+  mono: "hue=s=0,eq=contrast=1.15:gamma=0.95,vignette=angle=0.5,noise=alls=4:allf=t"
 }
 
 /** Media floating on the background with rounded corners and a soft shadow. */
@@ -292,6 +324,12 @@ const mainSegment = (
 ): Segment => {
   const { width: w, height: h, fps } = canvas
   const seconds = frames / fps
+  if (clip.mediaId === BLANK) {
+    const card = blankCard(g, canvas, clip.glow, frames)
+    const v = g.label("v")
+    g.add(`[${card}]trim=end_frame=${frames},setpts=PTS-STARTPTS,settb=1/${fps}[${v}]`)
+    return { v, a: still ? "" : silence(g, seconds), frames }
+  }
   const span = clip.out - clip.in
   const index = src.kind === "image"
     ? g.input(imageInput(src, fps, seconds))
@@ -346,8 +384,11 @@ const XFADE: Record<string, string> = {
   smooth_right: "smoothright",
   smooth_up: "smoothup",
   smooth_down: "smoothdown",
-  circle_open: "circleopen"
+  circle_open: "circleopen",
+  blur: "hblur"
 }
+
+const BLANK_SOURCE: SourceInfo = { path: "", kind: "image", hasAudio: false, width: 0, height: 0 }
 
 /** Joins main clips: hard cuts use concat, transitions use xfade and acrossfade. */
 const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames: number } | undefined => {
@@ -361,7 +402,7 @@ const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames:
     mainSegment(
       g,
       p.clip,
-      input.source(p.clip.mediaId),
+      p.clip.mediaId === BLANK ? BLANK_SOURCE : input.source(p.clip.mediaId),
       Math.max(1, toFrame(p.end) - toFrame(p.start)),
       canvas,
       manyInputs,
@@ -575,6 +616,11 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
   for (const o of timeline.overlays) {
     if (o.start >= total) continue
     v = overlayLayer(g, v, o, input, manyInputs, extraAudio)
+  }
+  if (canvas.look) {
+    const graded = g.label("look")
+    g.add(`[${v}]${LOOKS[canvas.look]}[${graded}]`)
+    v = graded
   }
   for (const b of timeline.blurs ?? []) {
     if (b.start >= total) continue

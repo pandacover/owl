@@ -49,6 +49,7 @@ export type TransitionType =
   | "smooth_up"
   | "smooth_down"
   | "circle_open"
+  | "blur"
 
 export interface Transition {
   readonly type: TransitionType
@@ -67,7 +68,12 @@ export interface MainClip {
   readonly transition?: Transition | undefined
   readonly zoom?: ReadonlyArray<ZoomKey> | undefined
   readonly card?: CardSettings | undefined
+  /** Blank clips only: a soft light drifting across the background, in this color. */
+  readonly glow?: string | undefined
 }
+
+/** Media id for a blank title card: the output background, no media. */
+export const BLANK = "blank"
 
 export type Layout =
   | "full"
@@ -123,8 +129,9 @@ export type TextStyle =
   | "highlight"
   | "cta"
   | "label"
+  | "statement"
 export type TextPosition = "center" | "top" | "bottom" | "lower_left" | "upper_left" | "upper_right"
-export type TextFont = "sans" | "display" | "serif"
+export type TextFont = "sans" | "display" | "serif" | "light"
 export type TextAnimation = "none" | "fade" | "pop" | "slide_up" | "words" | "typewriter" | "rise" | "zoom"
 
 export interface TextItem {
@@ -172,7 +179,11 @@ export interface OutputSettings {
   readonly background: string
   /** A second color: the background becomes a diagonal gradient from `background` to this. */
   readonly gradient?: string | undefined
+  /** A color grade over the whole picture, under text. */
+  readonly look?: Look | undefined
 }
+
+export type Look = "cinematic" | "mono"
 
 export interface Timeline {
   readonly output: OutputSettings

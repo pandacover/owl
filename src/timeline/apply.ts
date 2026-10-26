@@ -1,6 +1,7 @@
 import { formatTime, parseTime, round3, type TimeInput } from "../domain/Time.ts"
 import {
   type AudioItem,
+  BLANK,
   type BlurRegion,
   type CardSettings,
   clipDuration,
@@ -180,7 +181,8 @@ const DEFAULT_POSITION: Record<TextStyle, TextPosition> = {
   lower_third: "lower_left",
   caption: "bottom",
   cta: "center",
-  label: "upper_left"
+  label: "upper_left",
+  statement: "center"
 }
 
 const ASPECTS = {
@@ -193,7 +195,14 @@ const ASPECTS = {
 const describeClip = (clip: MainClip) => `${clip.id} (${clip.mediaId} ${formatTime(clip.in)}–${formatTime(clip.out)})`
 
 /** Applies operations in order. Throws EditFailure, in which case nothing is changed. */
-export const applyEdits = (project: Project, ops: ReadonlyArray<EditOp>, ctx: EditContext): EditResult => {
+/** A blank title card behaves like an image with no size of its own. */
+const BLANK_INFO: MediaInfo = {
+  id: BLANK, name: "title card", kind: "image", duration: 0, width: 0, height: 0, fps: 0,
+  hasAudio: false, hasTranscript: false, shots: []
+}
+
+export const applyEdits = (project: Project, ops: ReadonlyArray<EditOp>, given: EditContext): EditResult => {
+  const ctx: EditContext = { ...given, media: (id) => id === BLANK ? BLANK_INFO : given.media(id) }
   const t = project.timeline
   const draft: Draft = {
     output: t.output,
@@ -368,6 +377,7 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
   const speed = media.kind === "image" ? 1 : input.speed ?? 1
   const range = resolveRange(input, media, speed)
   if (input.card && (input.fit ?? "auto") !== "card") fail("card settings only apply with fit: card.")
+  if (input.glow && media.id !== BLANK) fail(`glow only applies to blank clips, not ${media.id}.`)
   return {
     id: nextId(draft, "c"),
     mediaId: media.id,
@@ -378,14 +388,16 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
     fit: input.fit ?? "auto",
     transition: transitionOf(input.transition),
     zoom: zoomOf(input.zoom, (range.out - range.in) / speed),
-    card: cardOf(input.card)
+    card: cardOf(input.card),
+    glow: input.glow
   }
 }
 
 /** The first visual clip decides the output size, unless the agent set it. */
 const autoOutput = (draft: Draft, ctx: EditContext) => {
-  if (draft.outputLocked || draft.main.length === 0) return
-  const media = ctx.media(draft.main[0]!.mediaId)
+  const first = draft.main.find((c) => c.mediaId !== BLANK)
+  if (draft.outputLocked || !first) return
+  const media = ctx.media(first.mediaId)
   if (media.width <= 0 || media.height <= 0) return
   const scale = Math.min(1, 1920 / Math.max(media.width, media.height))
   const fps = media.kind === "image" || media.fps <= 0 ? 30 : Math.min(60, Math.max(24, Math.round(media.fps)))
@@ -443,7 +455,7 @@ const findItem = (draft: Draft, id: string) => {
 }
 
 const ALLOWED: Record<"c" | "o" | "a" | "t" | "b", ReadonlyArray<string>> = {
-  c: ["in", "out", "speed", "volume", "fit", "card", "zoom", "transition"],
+  c: ["in", "out", "speed", "volume", "fit", "card", "zoom", "glow", "transition"],
   o: ["in", "out", "start", "duration", "speed", "volume", "fit", "card", "zoom", "layout", "fade_in", "fade_out"],
   a: ["in", "out", "start", "duration", "volume", "fade_in", "fade_out", "duck", "fill"],
   t: ["start", "end", "duration", "text", "style", "position", "color", "background", "font", "y", "animation"],
@@ -549,6 +561,7 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
     case "add_overlay": {
       const media = ctx.media(op.media)
       if (media.kind === "audio") fail(`${media.id} is audio only. Use add_audio.`)
+      if (media.id === BLANK) fail("blank only works on the main track. For a colored layer, use a blank clip there.")
       const speed = op.speed ?? 1
       const range = resolveRange(op, media, speed)
       if (op.card && op.fit !== "card") fail("card settings only apply with fit: card.")
@@ -678,7 +691,8 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
         height,
         fps: op.fps ?? draft.output.fps,
         background: op.background ?? draft.output.background,
-        gradient: op.gradient === undefined ? draft.output.gradient : op.gradient ?? undefined
+        gradient: op.gradient === undefined ? draft.output.gradient : op.gradient ?? undefined,
+        look: op.look === undefined ? draft.output.look : op.look ?? undefined
       }
       draft.outputLocked = true
       return `Output is ${width}x${height} at ${draft.output.fps}fps.`
@@ -721,9 +735,11 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
         fit: op.fit ?? clip.fit,
         transition: op.transition === undefined ? clip.transition : transitionOf(op.transition ?? undefined),
         zoom: op.zoom === undefined ? clip.zoom : zoomOf(op.zoom, (range.out - range.in) / speed),
-        card: op.card === undefined ? clip.card : cardOf(op.card)
+        card: op.card === undefined ? clip.card : cardOf(op.card),
+        glow: op.glow === undefined ? clip.glow : op.glow ?? undefined
       }
       if (op.card && next.fit !== "card") fail("card settings only apply with fit: card.")
+      if (op.glow && clip.mediaId !== BLANK) fail(`glow only applies to blank clips.`)
       if (next.in !== clip.in || next.out !== clip.out || next.speed !== clip.speed || op.transition !== undefined) {
         rippleMain(draft, () => {
           draft.main[index] = next

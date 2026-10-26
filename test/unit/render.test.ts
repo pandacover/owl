@@ -120,6 +120,34 @@ describe("render building blocks", () => {
   })
 })
 
+describe("cinematic", () => {
+  it("renders blank cards with a glow, a grade and thin text", () => {
+    const t: Timeline = {
+      ...emptyTimeline,
+      output: { width: 1080, height: 1920, fps: 30, background: "#07080A", look: "cinematic" },
+      main: [{ ...clip("c1", 0, 2), mediaId: "blank", glow: "#9FB6CF" }, clip("c2", 0, 2, { transition: { type: "blur", duration: 0.3 } })],
+      texts: [{ id: "t1", text: "Quiet line", start: 0, end: 2, style: "statement", position: "center", animation: "fade" }]
+    }
+    const { args } = buildRender({
+      timeline: t,
+      source: (id) => {
+        if (id === "blank") throw new Error("blank is not media")
+        return { path: `/x/${id}.mp4`, kind: "video", hasAudio: true, width: 1080, height: 1920 }
+      },
+      canvas: { width: 540, height: 960, fps: 30, background: "#07080A", look: "cinematic" },
+      speech: [],
+      quality: "draft",
+      output: "/x/out.mp4"
+    })
+    const graph = args[args.indexOf("-filter_complex") + 1]!
+    expect(args.filter((a) => a === "-i").length).toBe(1)
+    expect(graph).toContain("geq=r=159:g=182:b=207")
+    expect(graph).toContain("transition=hblur")
+    expect(graph).toContain("vignette")
+    expect(buildAss(t, [])).toContain("Inter Display Light")
+  })
+})
+
 describe("moments", () => {
   it("splits a still screen recording at bursts of change", () => {
     const frames = Array.from({ length: 300 }, (_, i) => {

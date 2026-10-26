@@ -38,7 +38,9 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
   lines.push(
     `${project.id} ${quote(project.name, 60)} · version ${project.version} · ${t.output.width}x${t.output.height} ${
       round1(t.output.fps)
-    }fps · length ${formatDuration(end)} · background ${t.output.background}${t.output.gradient ? `→${t.output.gradient}` : ""}`
+    }fps · length ${formatDuration(end)} · background ${t.output.background}${t.output.gradient ? `→${t.output.gradient}` : ""}${
+      t.output.look ? ` · look ${t.output.look}` : ""
+    }`
   )
 
   const placed = placeMain(t.main)
@@ -51,6 +53,7 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
     if (c.volume !== 1) extras.push(c.volume === 0 ? "muted" : `vol ${c.volume}`)
     if (c.fit !== "auto") extras.push(fitText(c.fit, c.card))
     if (c.zoom) extras.push(zoomText(c.zoom))
+    if (c.glow) extras.push(`glow ${c.glow}`)
     if (c.transition) extras.push(`${c.transition.type} ${c.transition.duration}s in`)
     lines.push(
       `  ${c.id}  ${formatRange(p.start, p.end)}  ${c.mediaId} ${quote(sources.name(c.mediaId), 30)} ${
