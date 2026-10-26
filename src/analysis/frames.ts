@@ -23,7 +23,7 @@ export const extractFrames = (
   for (let i = 0; i < requests.length; i += BATCH) batches.push(requests.slice(i, i + BATCH))
   return Effect.forEach(batches, (batch) => {
     const args: Array<string> = []
-    for (const r of batch) args.push("-ss", Math.max(0, r.time).toFixed(3), "-i", input)
+    for (const r of batch) args.push("-threads", "2", "-ss", Math.max(0, r.time).toFixed(3), "-i", input)
     batch.forEach((r, i) => {
       args.push("-map", `${i}:v:0`, "-frames:v", "1", "-vf", fitLongSide(options.maxSide), "-q:v", String(options.quality ?? 3), r.output)
     })

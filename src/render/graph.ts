@@ -62,6 +62,8 @@ export interface GraphInput {
 }
 
 const SAMPLE_RATE = 48000
+/** x264 threads. More threads buy little on a small machine and each one holds frames. */
+export const ENCODER_THREADS = 4
 const AUDIO_FORMAT = `aresample=${SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo`
 
 class Graph {
@@ -305,7 +307,10 @@ const imageInput = (src: SourceInfo, fps: number, seconds: number) => [
  * recordings) long before the video is needed.
  */
 const seekInput = (path: string, start: number, length: number, threads: boolean, only?: "video" | "audio") => [
-  ...(threads ? ["-threads", "2"] : []),
+  // Decoders size their thread pools by the CPUs they see, which in a container is
+  // the whole host: dozens of threads, each holding full-size frames.
+  "-threads",
+  threads ? "1" : "2",
   ...(only === "video" ? ["-an"] : only === "audio" ? ["-vn"] : []),
   "-ss",
   n(start),
@@ -691,7 +696,7 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
 
   if (still) {
     return {
-      args: [...g.inputs, "-filter_complex", g.filters.join(";"), "-map", `[${vout}]`, "-frames:v", "1", "-q:v", "3", input.output],
+      args: ["-filter_complex_threads", "2", ...g.inputs, "-filter_complex", g.filters.join(";"), "-map", `[${vout}]`, "-frames:v", "1", "-q:v", "3", input.output],
       duration: total
     }
   }
@@ -716,11 +721,17 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
       : `[${aout}]apad=pad_dur=0.3,alimiter=limit=0.95:level=disabled:latency=1,atrim=end=${n(totalFrames / fps)}[${afinal}]`
   )
 
-  const video = input.quality === "final"
-    ? ["-c:v", "libx264", "-preset", "faster", "-crf", "19", "-profile:v", "high"]
-    : ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-tune", "fastdecode"]
+  const video = [
+    ...(input.quality === "final"
+      ? ["-c:v", "libx264", "-preset", "faster", "-crf", "19", "-profile:v", "high"]
+      : ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-tune", "fastdecode"]),
+    "-threads",
+    String(ENCODER_THREADS)
+  ]
   return {
     args: [
+      "-filter_complex_threads",
+      "2",
       ...g.inputs,
       "-filter_complex",
       g.filters.join(";"),
