@@ -1,0 +1,250 @@
+import type { Word } from "../domain/Media.ts"
+import {
+  type CaptionSettings,
+  type OutputSettings,
+  placeMain,
+  type TextItem,
+  type TextPosition,
+  type TextStyle,
+  type Timeline
+} from "../domain/Timeline.ts"
+
+/**
+ * Text and captions become one ASS subtitle file, burned in by libass. ASS
+ * gives real typography (outline, shadow, boxes, per-word color) and
+ * animation tags without a filter per text item.
+ */
+
+export const FONT = "Inter"
+
+const ALIGN: Record<TextPosition, number> = {
+  lower_left: 1,
+  bottom: 2,
+  center: 5,
+  upper_left: 7,
+  top: 8,
+  upper_right: 9
+}
+
+/** #RRGGBB to ASS &HAABBGGRR. */
+const assColor = (hex: string, alpha = 0) => {
+  const h = hex.replace("#", "")
+  const a = alpha.toString(16).padStart(2, "0").toUpperCase()
+  return `&H${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`.toUpperCase()
+}
+
+const assTime = (t: number) => {
+  const cs = Math.max(0, Math.round(t * 100))
+  const h = Math.floor(cs / 360000)
+  const m = Math.floor(cs / 6000) % 60
+  const s = Math.floor(cs / 100) % 60
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs % 100).padStart(2, "0")}`
+}
+
+const escapeText = (s: string) => s.replace(/\\/g, "⧵").replace(/[{}]/g, (c) => c === "{" ? "(" : ")").replace(/\r?\n/g, "\\N")
+
+interface StyleSpec {
+  readonly size: number
+  readonly bold: boolean
+  readonly outline: number
+  readonly shadow: number
+  /** 1 outline, 3 opaque box. */
+  readonly border: 1 | 3
+  readonly back: string
+}
+
+const TEXT_STYLES: Record<TextStyle, StyleSpec> = {
+  title: { size: 0.1, bold: true, outline: 0.004, shadow: 0.003, border: 1, back: "#000000" },
+  subtitle: { size: 0.055, bold: false, outline: 0.003, shadow: 0.002, border: 1, back: "#000000" },
+  lower_third: { size: 0.045, bold: true, outline: 0.012, shadow: 0, border: 3, back: "#111111" },
+  caption: { size: 0.05, bold: true, outline: 0.004, shadow: 0.002, border: 1, back: "#000000" },
+  cta: { size: 0.07, bold: true, outline: 0.016, shadow: 0, border: 3, back: "#E11D48" },
+  label: { size: 0.035, bold: true, outline: 0.008, shadow: 0, border: 3, back: "#000000" }
+}
+
+const styleLine = (name: string, spec: StyleSpec, base: number, align: number, margins: [number, number, number]) => {
+  const px = (k: number) => Math.max(1, Math.round(k * base))
+  return [
+    `Style: ${name}`,
+    FONT,
+    px(spec.size),
+    assColor("#FFFFFF"),
+    assColor("#FFFFFF"),
+    // With BorderStyle 3 libass fills the box with the outline color.
+    assColor(spec.border === 3 ? spec.back : "#000000", spec.border === 3 ? 0x20 : 0),
+    assColor("#000000", 0x80),
+    spec.bold ? -1 : 0,
+    0,
+    0,
+    0,
+    100,
+    100,
+    0,
+    0,
+    spec.border,
+    spec.border === 3 ? px(spec.outline) : Math.max(1, px(spec.outline)),
+    px(spec.shadow),
+    align,
+    margins[0],
+    margins[1],
+    margins[2],
+    1
+  ].join(",")
+}
+
+const animationTags = (item: TextItem) => {
+  switch (item.animation) {
+    case "none":
+      return ""
+    case "fade":
+      return "{\\fad(250,250)}"
+    case "pop":
+      return "{\\fad(120,200)\\fscx70\\fscy70\\t(0,180,\\fscx108\\fscy108)\\t(180,280,\\fscx100\\fscy100)}"
+    case "slide_up":
+      return ""
+  }
+}
+
+const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
+  let tags = animationTags(item)
+  const align = ALIGN[item.position]
+  if (item.animation === "slide_up") {
+    // Compute the anchor point so \move can slide the text up into place.
+    const x = align === 1 || align === 7
+      ? Math.round(output.width * 0.06)
+      : align === 9
+      ? Math.round(output.width * 0.94)
+      : Math.round(output.width / 2)
+    const y = align === 5 ? Math.round(output.height / 2) : align >= 7 ? marginV : output.height - marginV
+    const shift = Math.round(output.height * 0.04)
+    tags = `{\\an${align}\\fad(200,200)\\move(${x},${y + shift},${x},${y},0,300)}`
+  }
+  const color = item.color ? `{\\c${assColor(item.color)}}` : ""
+  return `Dialogue: 1,${assTime(item.start)},${assTime(item.end)},${item.style}.${item.position},,0,0,0,,${tags}${color}${
+    escapeText(item.text)
+  }`
+}
+
+export interface CaptionWord {
+  readonly w: string
+  /** Timeline times. */
+  readonly s: number
+  readonly e: number
+}
+
+/** Words spoken in the main track, at timeline times. */
+export const timelineWords = (
+  timeline: Timeline,
+  wordsOf: (mediaId: string) => ReadonlyArray<Word>
+): Array<CaptionWord> => {
+  const out: Array<CaptionWord> = []
+  for (const p of placeMain(timeline.main)) {
+    const c = p.clip
+    if (c.volume === 0) continue
+    for (const w of wordsOf(c.mediaId)) {
+      const mid = (w.s + w.e) / 2
+      if (mid < c.in || mid > c.out) continue
+      const s = p.start + (Math.max(w.s, c.in) - c.in) / c.speed
+      const e = p.start + (Math.min(w.e, c.out) - c.in) / c.speed
+      // A word inside a transition overlap belongs to the clip that starts there; skip the earlier copy.
+      if (out.length > 0 && s < out[out.length - 1]!.s) continue
+      out.push({ w: w.w.trim(), s, e })
+    }
+  }
+  return out.filter((w) => w.w.length > 0)
+}
+
+/** Groups words into caption lines: a line ends at the word limit, a sentence end or a pause. */
+export const captionLines = (words: ReadonlyArray<CaptionWord>, maxWords: number): Array<Array<CaptionWord>> => {
+  const lines: Array<Array<CaptionWord>> = []
+  let line: Array<CaptionWord> = []
+  for (const w of words) {
+    const prev = line[line.length - 1]
+    if (prev && (line.length >= maxWords || w.s - prev.e > 0.6 || /[.!?]$/.test(prev.w))) {
+      lines.push(line)
+      line = []
+    }
+    line.push(w)
+  }
+  if (line.length > 0) lines.push(line)
+  return lines
+}
+
+const captionEvents = (words: ReadonlyArray<CaptionWord>, settings: CaptionSettings): Array<string> => {
+  const fix = (s: string) => escapeText(settings.uppercase ? s.toUpperCase() : s)
+  const lines = captionLines(words, settings.maxWordsPerLine)
+  const events: Array<string> = []
+  lines.forEach((line, i) => {
+    const start = line[0]!.s
+    const next = lines[i + 1]?.[0]?.s
+    // Hold a line until the next one when the gap is short, so captions do not flicker.
+    const end = next !== undefined && next - line[line.length - 1]!.e < 0.4 ? next : line[line.length - 1]!.e + 0.15
+    if (settings.style === "karaoke") {
+      const hi = assColor(settings.highlightColor)
+      line.forEach((word, j) => {
+        const s = j === 0 ? start : word.s
+        const e = j === line.length - 1 ? end : line[j + 1]!.s
+        const text = line.map((w, k) => k === j ? `{\\c${hi}}${fix(w.w)}{\\c&HFFFFFF&}` : fix(w.w)).join(" ")
+        events.push(`Dialogue: 0,${assTime(s)},${assTime(e)},Caption,,0,0,0,,${text}`)
+      })
+    } else {
+      events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Caption,,0,0,0,,${fix(line.map((w) => w.w).join(" "))}`)
+    }
+  })
+  return events
+}
+
+const CAPTION_STYLES: Record<CaptionSettings["style"], StyleSpec> = {
+  clean: { size: 0.055, bold: false, outline: 0.004, shadow: 0.002, border: 1, back: "#000000" },
+  bold: { size: 0.075, bold: true, outline: 0.006, shadow: 0.003, border: 1, back: "#000000" },
+  karaoke: { size: 0.075, bold: true, outline: 0.006, shadow: 0.003, border: 1, back: "#000000" },
+  boxed: { size: 0.055, bold: true, outline: 0.012, shadow: 0, border: 3, back: "#000000" }
+}
+
+/** Builds the ASS document, or undefined when there is nothing to draw. */
+export const buildAss = (
+  timeline: Timeline,
+  words: ReadonlyArray<CaptionWord>
+): string | undefined => {
+  const out = timeline.output
+  const captions = timeline.captions
+  if (timeline.texts.length === 0 && (!captions || words.length === 0)) return undefined
+  const base = Math.min(out.width, out.height)
+  const portrait = out.height > out.width
+  const marginH = Math.round(out.width * 0.06)
+  const marginV = Math.round(out.height * 0.06)
+  const styles: Array<string> = []
+  const used = new Set(timeline.texts.map((t) => `${t.style}.${t.position}`))
+  for (const key of used) {
+    const [style, position] = key.split(".") as [TextStyle, TextPosition]
+    styles.push(styleLine(key, TEXT_STYLES[style], base, ALIGN[position], [marginH, marginH, marginV]))
+  }
+  if (captions) {
+    const align = captions.position === "top" ? 8 : captions.position === "center" ? 5 : 2
+    // Portrait video is watched in apps that draw controls over the bottom, so captions sit higher.
+    const v = captions.position === "bottom" && portrait ? Math.round(out.height * 0.22) : Math.round(out.height * 0.08)
+    styles.push(styleLine("Caption", CAPTION_STYLES[captions.style], base, align, [marginH, marginH, v]))
+  }
+  const events = [
+    ...timeline.texts.map((t) => textEvent(t, out, marginV)),
+    ...(captions ? captionEvents(words, captions) : [])
+  ]
+  return [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${out.width}`,
+    `PlayResY: ${out.height}`,
+    "WrapStyle: 0",
+    "ScaledBorderAndShadow: yes",
+    "YCbCr Matrix: TV.709",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    ...styles,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...events,
+    ""
+  ].join("\n")
+}

@@ -1,0 +1,196 @@
+/**
+ * The edit is data. A timeline has one magnetic main track (clips play back to
+ * back, so removing a clip closes the gap) plus items placed at absolute times:
+ * overlays (B-roll, picture-in-picture), audio (music, sound effects) and text.
+ * Items are anchored to the main clip under them, so ripple edits carry them
+ * along, the way connected clips work in Final Cut Pro.
+ *
+ * All times are seconds. `in`/`out` are positions in the source media.
+ */
+
+/** auto: cover when the aspect ratio matches the output, otherwise blur. */
+export type Fit = "auto" | "cover" | "contain" | "blur"
+
+export type TransitionType =
+  | "crossfade"
+  | "fade_black"
+  | "fade_white"
+  | "wipe_left"
+  | "wipe_right"
+  | "slide_left"
+  | "slide_right"
+  | "zoom_in"
+  | "dissolve"
+
+export interface Transition {
+  readonly type: TransitionType
+  readonly duration: number
+}
+
+export interface MainClip {
+  readonly id: string
+  readonly mediaId: string
+  readonly in: number
+  readonly out: number
+  readonly speed: number
+  readonly volume: number
+  readonly fit: Fit
+  /** Transition from the previous clip into this one. */
+  readonly transition?: Transition | undefined
+}
+
+export type Layout =
+  | "full"
+  | "pip_top_right"
+  | "pip_top_left"
+  | "pip_bottom_right"
+  | "pip_bottom_left"
+  | "left_half"
+  | "right_half"
+  | "top_half"
+  | "bottom_half"
+
+export interface Overlay {
+  readonly id: string
+  readonly mediaId: string
+  readonly start: number
+  readonly in: number
+  readonly out: number
+  readonly speed: number
+  readonly layout: Layout
+  readonly fit: Fit
+  readonly volume: number
+  readonly fadeIn: number
+  readonly fadeOut: number
+}
+
+export interface AudioItem {
+  readonly id: string
+  readonly mediaId: string
+  readonly start: number
+  readonly in: number
+  readonly out: number
+  readonly volume: number
+  readonly fadeIn: number
+  readonly fadeOut: number
+  /** Lower this track automatically while the main track has speech. */
+  readonly duck: boolean
+  /** Repeat the source range until `duration` is filled, or until the end of the video when unset. */
+  readonly loop: boolean
+  /** Only used with loop: total length on the timeline. */
+  readonly duration?: number | undefined
+}
+
+export type TextStyle = "title" | "subtitle" | "lower_third" | "caption" | "cta" | "label"
+export type TextPosition = "center" | "top" | "bottom" | "lower_left" | "upper_left" | "upper_right"
+
+export interface TextItem {
+  readonly id: string
+  readonly text: string
+  readonly start: number
+  readonly end: number
+  readonly style: TextStyle
+  readonly position: TextPosition
+  readonly color?: string | undefined
+  readonly animation: "none" | "fade" | "pop" | "slide_up"
+}
+
+export type CaptionStyle = "clean" | "bold" | "karaoke" | "boxed"
+
+export interface CaptionSettings {
+  readonly style: CaptionStyle
+  readonly position: "bottom" | "center" | "top"
+  readonly maxWordsPerLine: number
+  readonly uppercase: boolean
+  readonly highlightColor: string
+}
+
+export interface OutputSettings {
+  readonly width: number
+  readonly height: number
+  readonly fps: number
+  readonly background: string
+}
+
+export interface Timeline {
+  readonly output: OutputSettings
+  readonly main: ReadonlyArray<MainClip>
+  readonly overlays: ReadonlyArray<Overlay>
+  readonly audio: ReadonlyArray<AudioItem>
+  readonly texts: ReadonlyArray<TextItem>
+  readonly captions?: CaptionSettings | undefined
+}
+
+export interface Project {
+  readonly id: string
+  readonly name: string
+  readonly createdAt: string
+  readonly updatedAt: string
+  /** Increments on every change, including undo. */
+  readonly version: number
+  readonly timeline: Timeline
+  /** Counters for readable ids: c1, c2, o1, a1, t1. */
+  readonly counters: { readonly c: number; readonly o: number; readonly a: number; readonly t: number }
+  /** Whether output size was chosen explicitly. If not, the first clip decides it. */
+  readonly outputLocked: boolean
+  readonly undo: ReadonlyArray<HistoryEntry>
+  readonly redo: ReadonlyArray<HistoryEntry>
+}
+
+export interface HistoryEntry {
+  readonly label: string
+  readonly timeline: Timeline
+  readonly counters: Project["counters"]
+  readonly outputLocked: boolean
+}
+
+export const emptyTimeline: Timeline = {
+  output: { width: 1920, height: 1080, fps: 30, background: "#000000" },
+  main: [],
+  overlays: [],
+  audio: [],
+  texts: []
+}
+
+export const clipDuration = (clip: { readonly in: number; readonly out: number; readonly speed: number }): number =>
+  (clip.out - clip.in) / clip.speed
+
+export interface PlacedClip {
+  readonly clip: MainClip
+  readonly index: number
+  /** Timeline start, after the overlap with the previous clip's transition. */
+  readonly start: number
+  readonly end: number
+}
+
+/** Positions of main clips on the timeline. A transition overlaps the clip with the one before it. */
+export const placeMain = (main: ReadonlyArray<MainClip>): ReadonlyArray<PlacedClip> => {
+  const placed: Array<PlacedClip> = []
+  let cursor = 0
+  main.forEach((clip, index) => {
+    const overlap = index > 0 && clip.transition ? clip.transition.duration : 0
+    const start = Math.max(0, cursor - overlap)
+    const end = start + clipDuration(clip)
+    placed.push({ clip, index, start, end })
+    cursor = end
+  })
+  return placed
+}
+
+export const mainDuration = (main: ReadonlyArray<MainClip>): number => {
+  const placed = placeMain(main)
+  return placed.length === 0 ? 0 : placed[placed.length - 1]!.end
+}
+
+/** Length on the timeline. A loop without a duration runs to `videoEnd`. */
+export const audioItemDuration = (item: AudioItem, videoEnd: number): number =>
+  item.loop ? (item.duration ?? Math.max(0, videoEnd - item.start)) : item.out - item.in
+
+export const timelineDuration = (timeline: Timeline): number => {
+  let end = mainDuration(timeline.main)
+  for (const o of timeline.overlays) end = Math.max(end, o.start + clipDuration(o))
+  for (const t of timeline.texts) end = Math.max(end, t.end)
+  // Audio does not extend the video: music longer than the edit is cut at the end.
+  if (end === 0) for (const a of timeline.audio) end = Math.max(end, a.start + (a.duration ?? a.out - a.in))
+  return end
+}

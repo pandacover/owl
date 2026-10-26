@@ -1,0 +1,34 @@
+{
+  "name": "owl",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Agent-first video editor: a remote MCP server with an FFmpeg engine, built on Effect.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "check": "tsc -p tsconfig.json && tsc -p worker/tsconfig.json && tsc -p test/e2e/tsconfig.json",
+    "test": "vitest run test/unit",
+    "test:e2e": "scripts/sample-media.sh .samples && OWL_SAMPLES=.samples vitest run test/e2e",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@cloudflare/containers": "0.3.7",
+    "@effect/platform-node": "4.0.6",
+    "effect": "4.0.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261026.1",
+    "@effect/vitest": "4.0.6",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5",
+    "wrangler": "4.153.0"
+  }
+}
