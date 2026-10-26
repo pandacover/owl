@@ -19,8 +19,16 @@ const PORT = 8080
 const env = (key: string) => process.env[key]?.trim() || undefined
 const fail = (message: string): never => {
   console.error(`\n${message}\n`)
+  // On GitHub Actions, also show the error at the top of the run page.
+  if (env("GITHUB_ACTIONS")) console.log(`::error title=Deploy failed::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`)
   process.exit(1)
 }
+const describe = (error: unknown) => {
+  const e = error as { name?: string; message?: string; statusCode?: number }
+  return `${e?.name ?? "Error"}${e?.statusCode ? ` (HTTP ${e.statusCode})` : ""}: ${e?.message ?? String(error)}`
+}
+process.on("uncaughtException", (error) => fail(describe(error)))
+process.on("unhandledRejection", (error) => fail(describe(error)))
 const summary = (text: string) => {
   console.log(text)
   const file = env("GITHUB_STEP_SUMMARY")
