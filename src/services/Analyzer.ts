@@ -4,6 +4,7 @@ import { OwlConfig } from "../Config.ts"
 import { extractFrames, fitLongSide } from "../analysis/frames.ts"
 import { runAudioAnalysis } from "../analysis/runAudio.ts"
 import { buildShots, parseSceneMetadata } from "../analysis/shots.ts"
+import { ENCODER_THREADS } from "../render/graph.ts"
 import type { Analysis, AudioAnalysis, MediaRecord, Probe, Shot, Transcript } from "../domain/Media.ts"
 import { OwlError } from "../domain/Errors.ts"
 import { formatDuration, round1 } from "../domain/Time.ts"
@@ -159,6 +160,8 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
             outputs.push(
               "-c:v",
               "libx264",
+              "-threads",
+              String(ENCODER_THREADS),
               "-preset",
               "veryfast",
               "-crf",
@@ -175,7 +178,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
             outputs.push("-map", "[aspeech]", "-c:a", "libmp3lame", "-b:a", "32k", `${work}/speech.mp3`)
           }
           yield* library.setStage(record.id, "proxy", { status: "running", progress: 0 })
-          yield* ffmpeg.run(["-i", source, "-filter_complex", graph.join(";"), ...outputs], {
+          yield* ffmpeg.run(["-threads", "2", "-filter_complex_threads", "2", "-i", source, "-filter_complex", graph.join(";"), ...outputs], {
             duration: probe.duration,
             onProgress: (p) =>
               library.setStage(record.id, "proxy", { status: "running", progress: Math.round(p * 100) / 100 }).pipe(
