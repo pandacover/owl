@@ -2,7 +2,7 @@ import { Context, Effect, Layer, Option, Semaphore } from "effect"
 import { OwlError, type StorageError } from "../domain/Errors.ts"
 import { newId } from "../domain/Ids.ts"
 import type { Analysis, MediaRecord } from "../domain/Media.ts"
-import { emptyTimeline, type HistoryEntry, type Project, timelineDuration } from "../domain/Timeline.ts"
+import { BLANK, emptyTimeline, type HistoryEntry, type Project, timelineDuration } from "../domain/Timeline.ts"
 import { applyEdits, EditFailure, type MediaInfo } from "../timeline/apply.ts"
 import { describeProject, type DescribeSources } from "../timeline/describe.ts"
 import type { EditOp } from "../timeline/Ops.ts"
@@ -52,6 +52,8 @@ const mediaIdsOf = (project: Project, ops: ReadonlyArray<EditOp>) => {
     if ("media" in op) ids.add(op.media)
     if ("clips" in op && typeof op.clips[0] === "object") for (const c of op.clips as ReadonlyArray<{ media: string }>) ids.add(c.media)
   }
+  // Blank title cards are not media.
+  ids.delete(BLANK)
   return ids
 }
 
@@ -234,7 +236,7 @@ export class Projects extends Context.Service<Projects, ProjectsShape>()("owl/Pr
             if (Option.isSome(analysis)) analyses.set(id, analysis.value)
           }
           return {
-            name: (id) => names.get(id) ?? id,
+            name: (id) => id === BLANK ? "title card" : names.get(id) ?? id,
             speech: (id, start, end) => {
               const words = analyses.get(id)?.transcript?.segments.flatMap((s) => s.words)
                 .filter((w) => w.s >= start - 0.15 && w.e <= end + 0.15)

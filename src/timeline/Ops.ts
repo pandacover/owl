@@ -61,15 +61,16 @@ export const TransitionTypeSchema = Schema.Literals([
   "smooth_right",
   "smooth_up",
   "smooth_down",
-  "circle_open"
+  "circle_open",
+  "blur"
 ])
 export const TransitionSchema = Schema.Struct({
   type: TransitionTypeSchema,
   duration: Schema.optionalKey(d(Seconds, "Seconds, default 0.5."))
 }).annotate({ identifier: "Transition", description: "Transition from the previous main clip into this one." })
 export const TextStyleSchema = d(
-  Schema.Literals(["title", "headline", "kicker", "subtitle", "lower_third", "caption", "highlight", "cta", "label"]),
-  "headline: very large heavy display type for hooks. title: large display type. kicker: small spaced uppercase line above a headline. subtitle and caption: supporting lines. highlight: text on a solid box (default white box, dark text). cta: call to action on a colored box. lower_third: name strip. label: small tag."
+  Schema.Literals(["title", "headline", "kicker", "subtitle", "lower_third", "caption", "highlight", "cta", "label", "statement"]),
+  "statement: medium thin text with no box, for calm cinematic lines and quotes (default font light). headline: very large heavy display type for hooks. title: large display type. kicker: small spaced uppercase line above a headline. subtitle and caption: supporting lines. highlight: text on a solid box (default white box, dark text). cta: call to action on a colored box. lower_third: name strip. label: small tag."
 )
 export const TextPositionSchema = Schema.Literals(["center", "top", "bottom", "lower_left", "upper_left", "upper_right"])
 export const TextAnimationSchema = d(
@@ -77,12 +78,12 @@ export const TextAnimationSchema = d(
   "words: words appear one by one (great for headlines). typewriter: letters appear one by one. rise: soft slide up. zoom: settles in from slightly larger. pop: bouncy scale."
 )
 export const TextFontSchema = d(
-  Schema.Literals(["sans", "display", "serif"]),
-  "sans: Inter. display: Inter Display, heavy and tight (default for title, headline, highlight, cta). serif: Instrument Serif, elegant editorial look."
+  Schema.Literals(["sans", "display", "serif", "light"]),
+  "sans: Inter. display: Inter Display, heavy and tight (default for title, headline, highlight, cta). serif: Instrument Serif, elegant editorial look. light: Inter Display Light, thin and calm (cinematic, premium tech)."
 )
 
 const SourceRange = {
-  media: Id("Media id, e.g. m_7kq2xd."),
+  media: Id("Media id, e.g. m_7kq2xd. On the main track, \"blank\" is a title card: the output background (or gradient) for `duration` seconds, for text on a clean frame."),
   shot: Schema.optionalKey(d(Schema.Int, "Use this shot's range (shot numbers come from media_get or media_search).")),
   moment: Schema.optionalKey(d(Schema.Int, "With shot: use only this moment of the shot (one step of a screen recording, listed under the shot in media_get).")),
   in: Schema.optionalKey(d(TimeInput, "Start inside the source. Default: shot start, or 0.")),
@@ -97,7 +98,8 @@ export const ClipInput = Schema.Struct({
   fit: Schema.optionalKey(FitSchema),
   card: Schema.optionalKey(CardSchema),
   zoom: Schema.optionalKey(ZoomSchema),
-  transition: Schema.optionalKey(TransitionSchema)
+  transition: Schema.optionalKey(TransitionSchema),
+  glow: Schema.optionalKey(d(Color, "Blank clips only: a soft light in this color drifting across the card, e.g. #9FB6CF on a near-black background."))
 }).annotate({ identifier: "Clip", description: "A piece of a media file for the main track." })
 export type ClipInput = typeof ClipInput.Type
 
@@ -232,6 +234,7 @@ export const Update = d(
     fit: Schema.optionalKey(FitSchema),
     card: Schema.optionalKey(CardSchema),
     zoom: Schema.optionalKey(Schema.NullOr(ZoomSchema)),
+    glow: Schema.optionalKey(Schema.NullOr(Color)),
     transition: Schema.optionalKey(Schema.NullOr(TransitionSchema)),
     layout: Schema.optionalKey(LayoutSchema),
     fade_in: Schema.optionalKey(Seconds),
@@ -285,7 +288,11 @@ export const SetOutput = d(
     height: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 128, maximum: 3840 }))),
     fps: Schema.optionalKey(Schema.Finite.check(Schema.isBetween({ minimum: 1, maximum: 60 }))),
     background: Schema.optionalKey(d(Color, "Background color, seen around contain and card media.")),
-    gradient: Schema.optionalKey(d(Schema.NullOr(Color), "Second color: the background becomes a diagonal gradient from background to this. null for a flat color."))
+    gradient: Schema.optionalKey(d(Schema.NullOr(Color), "Second color: the background becomes a diagonal gradient from background to this. null for a flat color.")),
+    look: Schema.optionalKey(d(
+      Schema.NullOr(Schema.Literals(["cinematic", "mono"])),
+      "Color grade over the whole picture (text stays clean). cinematic: film contrast, cool shadows, warm highlights, vignette and fine grain. mono: rich black and white. null for none."
+    ))
   }),
   "Set the output frame size, frame rate or background."
 )

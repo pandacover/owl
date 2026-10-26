@@ -4,5 +4,5 @@ Bundled so text renders the same everywhere. All are under the SIL Open Font Lic
 
 | File | Font | Source | License |
 | --- | --- | --- | --- |
-| `InterDisplay-Black.otf`, `InterDisplay-Bold.otf`, `Inter-SemiBold.otf` | Inter 4 | https://github.com/rsms/inter | `OFL-Inter.txt` |
+| `InterDisplay-Black.otf`, `InterDisplay-Bold.otf`, `InterDisplay-Light.otf`, `Inter-SemiBold.otf` | Inter 4 | https://github.com/rsms/inter | `OFL-Inter.txt` |
 | `InstrumentSerif-Regular.ttf`, `InstrumentSerif-Italic.ttf` | Instrument Serif | https://github.com/google/fonts/tree/main/ofl/instrumentserif | `OFL-InstrumentSerif.txt` |

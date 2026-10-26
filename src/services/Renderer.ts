@@ -5,7 +5,7 @@ import { OwlError, type StorageError } from "../domain/Errors.ts"
 import { newId, randomCode } from "../domain/Ids.ts"
 import type { Word } from "../domain/Media.ts"
 import { round3 } from "../domain/Time.ts"
-import { type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
+import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
 import { buildRender, type Canvas, type SourceInfo } from "../render/graph.ts"
 import { sliceTimeline } from "../render/slice.ts"
@@ -69,11 +69,13 @@ const scaledCanvas = (output: OutputSettings, maxSide: number): Canvas => {
     height: even(output.height),
     fps: output.fps,
     background: output.background,
-    gradient: output.gradient
+    gradient: output.gradient,
+    look: output.look
   }
 }
 
-const mediaIds = (t: Timeline) => new Set([...t.main, ...t.overlays, ...t.audio].map((x) => x.mediaId))
+const mediaIds = (t: Timeline) =>
+  new Set([...t.main, ...t.overlays, ...t.audio].map((x) => x.mediaId).filter((id) => id !== BLANK))
 
 export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Renderer") {
   static readonly layer = Layer.effect(
@@ -138,6 +140,10 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           const words = new Map<string, ReadonlyArray<Word>>()
           for (const c of timeline.main) {
             if (words.has(c.mediaId)) continue
+            if (c.mediaId === BLANK) {
+              words.set(c.mediaId, [])
+              continue
+            }
             const analysis = yield* library.analysis(c.mediaId).pipe(Effect.orElseSucceed(() => Option.none()))
             words.set(
               c.mediaId,

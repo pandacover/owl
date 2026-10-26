@@ -134,4 +134,18 @@ describe("applyEdits", () => {
     p = run(p, [{ op: "delete", ids: ["b1"] }])
     expect(p.timeline.blurs ?? []).toEqual([])
   })
+
+  it("makes blank title cards with a glow and skips them for the output size", () => {
+    const p = run(empty, [{
+      op: "set_main",
+      clips: [{ media: "blank", duration: 2, glow: "#9FB6CF" }, { media: "m_b", in: 0, out: 3 }]
+    }])
+    expect(p.timeline.main[0]).toMatchObject({ mediaId: "blank", in: 0, out: 2, glow: "#9FB6CF" })
+    expect(p.timeline.output).toMatchObject({ width: 1920, height: 1080 })
+    expect(() => run(p, [{ op: "add_overlay", media: "blank", start: 0 }])).toThrow(/main track/)
+    expect(() => run(p, [{ op: "update", id: "c2", glow: "#FFFFFF" }])).toThrow(/blank/)
+    const graded = run(p, [{ op: "set_output", look: "cinematic" }])
+    expect(graded.timeline.output.look).toBe("cinematic")
+    expect(run(graded, [{ op: "set_output", look: null }]).timeline.output.look).toBeUndefined()
+  })
 })

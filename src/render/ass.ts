@@ -22,7 +22,8 @@ export const FONT = "Inter"
 const FAMILIES: Record<TextFont, { readonly regular: string; readonly bold: string }> = {
   sans: { regular: "Inter", bold: "Inter" },
   display: { regular: "Inter Display", bold: "Inter Display Black" },
-  serif: { regular: "Instrument Serif", bold: "Instrument Serif" }
+  serif: { regular: "Instrument Serif", bold: "Instrument Serif" },
+  light: { regular: "Inter Display Light", bold: "Inter Display Light" }
 }
 
 const ALIGN: Record<TextPosition, number> = {
@@ -98,7 +99,8 @@ const TEXT_STYLES: Record<TextStyle, StyleSpec> = {
   caption: spec({ size: 0.05, outline: 0.004 }),
   highlight: spec({ size: 0.062, font: "display", outline: 0.02, border: 3, back: "#FFFFFF", color: "#111111", soft: false }),
   cta: spec({ size: 0.07, font: "display", outline: 0.022, border: 3, back: "#E11D48", soft: false }),
-  label: spec({ size: 0.035, outline: 0.008, border: 3, back: "#000000", soft: false })
+  label: spec({ size: 0.035, outline: 0.008, border: 3, back: "#000000", soft: false }),
+  statement: spec({ size: 0.058, bold: false, font: "light", outline: 0.002, spacing: -0.0005 })
 }
 
 const styleLine = (

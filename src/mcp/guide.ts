@@ -3,13 +3,18 @@
  * the server instructions so it costs nothing until the agent asks for it.
  */
 
-export const GUIDE_TOPICS = ["principles", "screen_recording", "product_ad", "talking_head", "montage", "text"] as const
+export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "text"] as const
 export type GuideTopic = typeof GUIDE_TOPICS[number]
 
 const PRINCIPLES = `Premium edit principles (read before building any edit)
 
+Pick one style first and keep to it:
+- Bold social: light or brand-colored background, big headlines, highlight boxes, fast energy. Recipes: screen_recording, product_ad.
+- Cinematic: dark, calm and expensive, thin small text, slow holds then a fast build (the look of Apple and Luma launch films). Recipe: cinematic.
+If the user names a reference ad or says "premium", "cinematic" or "launch film", use cinematic. If unsure, ask.
+
 Hook
-- The first 1.5 seconds decide everything. Open on the strongest visual with a 3 to 6 word headline. No logo intro, no slow fade from black.
+- The first 1.5 seconds decide everything. Open on the strongest visual with a 3 to 6 word headline. No logo intro, no slow fade from black (the cinematic style has its own calm opening).
 
 Pacing
 - Ads and promos: a new picture every 1 to 2.5 seconds. Hold only as long as it takes to read the key text.
@@ -28,7 +33,7 @@ Look
 - Hide private details with add_blur: phone numbers, contact names, emails, notification badges, personal messages, other apps on a home screen.
 
 Transitions
-- Default to hard cuts. Use smooth_left or smooth_up (0.3 to 0.4s) to move between app steps. Avoid crossfades between UI screens; they look muddy. fade_black only at the very end.
+- Default to hard cuts. Use smooth_left or smooth_up (0.3 to 0.4s) to move between app steps, or blur (0.3s) in the cinematic style. Avoid crossfades between UI screens; they look muddy. fade_black only at the very end.
 
 Sound
 - A premium edit has music. If the user has no track, ask for one (they can upload it with media_upload_link) before the final render, and say why. Cut on beats (media_get detail full lists beat times; edit_beat_montage does it automatically).
@@ -40,6 +45,42 @@ Checking
 - After building: timeline_get, then preview_frames with a project at every text change and every zoom peak. Fix overlaps, cut-off text and unreadable contrast before rendering. Then a draft render.
 
 Ask the user for anything you cannot see: brand colors, the URL, the one message the ad must land.`
+
+const CINEMATIC = `Recipe: cinematic launch film (dark, calm, premium; modeled on Luma's launch ad)
+
+Look
+- set_output look "cinematic", background #07080A, gradient #141821 (or a dark tone of the brand color).
+- Title cards are main clips with media "blank" and a glow: {"media":"blank","duration":3,"glow":"#9FB6CF"}.
+- Text is quiet: style "statement" (thin, white, no box), centered, one line at a time, at most 6 words. The product name uses style "title" only on the end card. Never highlight boxes, kickers or heavy outlines in this style.
+- Text sits on dark: blank cards or dark footage. Never put white text over a light app screen; cut to a blank card for the line instead.
+
+Structure (times from a 68s launch film; scale down for 15 to 30s)
+1. Cold open (3 to 4s): blank card, one line with animation fade, e.g. a quote or a question.
+2. Name (2s): the product name on a blank card, fade_black into and out of it.
+3. The problem (4 to 10s): real moments of the struggle, 1.5 to 3s each, hard cuts, no text.
+4. The turn: an extreme close-up of the app, fit "cover" with zoom 2.5 to 3.5 on the input field or button (like a macro shot), and the typed prompt as statement text with animation "typewriter", kept on screen across 2 or 3 cuts.
+5. Working beat (1.5 to 2s): blank card with glow and a status line like "Listening…".
+6. Results (6 to 15s): each result 1 to 2s. Overviews as fit "card" (scale 0.8) on the dark background; details as zoomed cover shots. blur transitions (0.3s) between screens, otherwise hard cuts.
+7. Build (2 to 3s): 8 to 12 very short cuts (0.15 to 0.3s each) on the music's rise, the fastest part of the film.
+8. End (4 to 5s): blank card with glow, product name (title, fade), then a 2 to 4 word tagline (statement) alone, fade_black out.
+
+Rhythm: long calm holds at the start and end, fast in the middle. The contrast is what feels expensive.
+Sound: a cinematic track that builds (soft pads, pulse, hit). Ask the user for one; cut the build on beats.
+
+Example ops (9:16):
+[
+  {"op":"set_output","aspect":"9:16","background":"#07080A","gradient":"#141821","look":"cinematic"},
+  {"op":"set_main","clips":[
+    {"media":"blank","duration":3,"glow":"#9FB6CF"},
+    {"media":"blank","duration":2.4,"glow":"#9FB6CF","transition":{"type":"fade_black","duration":0.5}},
+    {"media":"m_x","shot":1,"moment":1,"fit":"cover","zoom":[{"at":0,"scale":2.8,"x":0.5,"y":0.3},{"at":2,"scale":3.1,"x":0.5,"y":0.3}],"transition":{"type":"fade_black","duration":0.4}},
+    {"media":"m_x","shot":1,"moment":2,"fit":"card","card":{"scale":0.8},"transition":{"type":"blur","duration":0.3}},
+    {"media":"blank","duration":4,"glow":"#9FB6CF","transition":{"type":"fade_black","duration":0.5}}
+  ]},
+  {"op":"add_text","text":"\u201cYour thoughts deserve better notes.\u201d","style":"statement","start":0.4,"end":2.9,"animation":"fade"},
+  {"op":"add_text","text":"Echo","style":"title","start":3.1,"end":4.4,"animation":"fade"}
+]
+Add the end card text at the last clip's start (timeline_get shows it).`
 
 const SCREEN_RECORDING = `Recipe: app or website demo from screen recordings (9:16, 12 to 20 seconds)
 
@@ -99,8 +140,8 @@ const MONTAGE = `Recipe: music montage
 
 const TEXT = `Typography recipes
 
-Styles: headline (very large, for hooks), title (large), kicker (small spaced capitals above a headline), subtitle and caption (supporting lines), highlight (text on a solid box), cta (call to action box), lower_third (name strip), label (small tag).
-Fonts: display (heavy, modern; default for headline, title, highlight, cta), serif (elegant, editorial), sans (clean UI look).
+Styles: statement (thin, calm, no box; the cinematic style), headline (very large, for hooks), title (large), kicker (small spaced capitals above a headline), subtitle and caption (supporting lines), highlight (text on a solid box), cta (call to action box), lower_third (name strip), label (small tag).
+Fonts: display (heavy, modern; default for headline, title, highlight, cta), light (thin and premium; default for statement), serif (elegant, editorial), sans (clean UI look).
 Animations: words (word by word, best for headlines), rise (soft slide up), zoom (settles in), typewriter (letters), fade, pop.
 
 Stacking a kicker over a headline: same position, kicker y 0.04, headline y 0.065 (top of a 9:16 frame). Start the headline 0.2s after the kicker.
@@ -112,6 +153,7 @@ Check every text with preview_frames before rendering.`
 
 export const GUIDE: Record<GuideTopic, string> = {
   principles: PRINCIPLES,
+  cinematic: CINEMATIC,
   screen_recording: SCREEN_RECORDING,
   product_ad: PRODUCT_AD,
   talking_head: TALKING_HEAD,
