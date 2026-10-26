@@ -35,7 +35,7 @@ export interface MediaInfo {
     readonly index: number
     readonly start: number
     readonly end: number
-    readonly moments?: ReadonlyArray<{ readonly start: number; readonly end: number }> | undefined
+    readonly moments?: ReadonlyArray<{ readonly start: number; readonly end: number; readonly keyframe?: number }> | undefined
   }>
 }
 
@@ -375,9 +375,10 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
   const media = ctx.media(input.media)
   if (media.kind === "audio") fail(`${media.id} is audio only. Add it with add_audio instead.`)
   const speed = media.kind === "image" ? 1 : input.speed ?? 1
-  const range = resolveRange(input, media, speed)
   if (input.card && (input.fit ?? "auto") !== "card") fail("card settings only apply with fit: card.")
   if (input.glow && media.id !== BLANK) fail(`glow only applies to blank clips, not ${media.id}.`)
+  if (input.freeze !== undefined) return makeFreeze(draft, input, media)
+  const range = resolveRange(input, media, speed)
   return {
     id: nextId(draft, "c"),
     mediaId: media.id,
@@ -390,6 +391,40 @@ const makeClip = (draft: Draft, input: ClipInput, ctx: EditContext): MainClip =>
     zoom: zoomOf(input.zoom, (range.out - range.in) / speed),
     card: cardOf(input.card),
     glow: input.glow
+  }
+}
+
+/** A clip that holds one source frame. in and out span the hold so timeline maths stay linear. */
+const makeFreeze = (draft: Draft, input: ClipInput, media: MediaInfo): MainClip => {
+  const hold = input.freeze!
+  if (media.kind !== "video") fail(`freeze needs a video; ${media.id} is ${media.id === BLANK ? "a blank card" : `an ${media.kind}`}. Use duration instead.`)
+  if (hold < MIN_CLIP) fail(`freeze must be at least ${MIN_CLIP}s.`)
+  const frame = 1 / Math.max(1, media.fps)
+  const given = optTime(input.in, "in")
+  let at: number
+  if (given !== undefined) {
+    if (given < 0 || given >= media.duration) fail(`in ${formatTime(given)} is outside ${media.id} (${formatTime(media.duration)} long).`)
+    at = given
+  } else {
+    const { duration: _, ...source } = input
+    const range = resolveRange(source, media, 1)
+    const shot = input.shot !== undefined ? media.shots.find((s) => s.index === input.shot) : undefined
+    const keyframe = input.moment !== undefined ? shot?.moments?.[input.moment - 1]?.keyframe : undefined
+    at = keyframe ?? Math.max(range.in, range.out - frame)
+  }
+  at = round3(Math.min(at, media.duration - frame))
+  return {
+    id: nextId(draft, "c"),
+    mediaId: media.id,
+    in: at,
+    out: round3(at + hold),
+    speed: 1,
+    volume: 0,
+    fit: input.fit ?? "auto",
+    transition: transitionOf(input.transition),
+    zoom: zoomOf(input.zoom, hold),
+    card: cardOf(input.card),
+    freeze: at
   }
 }
 
@@ -455,10 +490,10 @@ const findItem = (draft: Draft, id: string) => {
 }
 
 const ALLOWED: Record<"c" | "o" | "a" | "t" | "b", ReadonlyArray<string>> = {
-  c: ["in", "out", "speed", "volume", "fit", "card", "zoom", "glow", "transition"],
+  c: ["in", "out", "speed", "volume", "fit", "card", "zoom", "glow", "freeze", "transition"],
   o: ["in", "out", "start", "duration", "speed", "volume", "fit", "card", "zoom", "layout", "fade_in", "fade_out"],
   a: ["in", "out", "start", "duration", "volume", "fade_in", "fade_out", "duck", "fill"],
-  t: ["start", "end", "duration", "text", "style", "position", "color", "background", "font", "y", "animation"],
+  t: ["start", "end", "duration", "text", "style", "position", "color", "background", "size", "font", "y", "animation"],
   b: ["start", "end", "duration", "x", "y", "w", "h"]
 }
 
@@ -499,6 +534,7 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
       const clip = draft.main[i]!
       const media = ctx.media(clip.mediaId)
       if (op.in === undefined && op.out === undefined) fail("Give in, out or both.")
+      if (clip.freeze !== undefined) fail(`${clip.id} is a freeze frame. Change its length with update freeze.`)
       const range = media.kind === "image"
         ? { in: 0, out: optTime(op.out, "out") ?? clip.out }
         : resolveRange(
@@ -624,6 +660,7 @@ const applyOne = (draft: Draft, op: EditOp, ctx: EditContext): string => {
         position: op.position ?? DEFAULT_POSITION[style],
         color: op.color,
         background: op.background,
+        size: op.size,
         font: op.font,
         y: op.y,
         animation: op.animation ?? "fade"
@@ -721,8 +758,16 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
     case "c": {
       const clip = draft.main[index]!
       const media = ctx.media(clip.mediaId)
+      if (clip.freeze !== undefined) {
+        const bad = given.filter((k) => k === "in" || k === "out" || k === "speed" || k === "volume")
+        if (bad.length > 0) fail(`${clip.id} is a freeze frame, so it has no ${bad.join(", ")}. Change its length with freeze, or replace it.`)
+      } else if (op.freeze !== undefined) {
+        fail(`${clip.id} plays its source. To hold a frame, add a clip with freeze.`)
+      }
       const speed = op.speed ?? clip.speed
-      const range = op.in !== undefined || op.out !== undefined
+      const range = op.freeze !== undefined
+        ? { in: clip.in, out: round3(clip.in + Math.max(MIN_CLIP, op.freeze)) }
+        : op.in !== undefined || op.out !== undefined
         ? media.kind === "image"
           ? { in: 0, out: optTime(op.out, "out") ?? clip.out }
           : resolveRange({ media: clip.mediaId, in: op.in ?? clip.in, out: op.out ?? clip.out }, media, speed)
@@ -818,6 +863,7 @@ const applyUpdate = (draft: Draft, op: Extract<EditOp, { op: "update" }>, ctx: E
         position: op.position ?? (op.style ? DEFAULT_POSITION[op.style] : item.position),
         color: op.color === undefined ? item.color : op.color ?? undefined,
         background: op.background === undefined ? item.background : op.background ?? undefined,
+        size: op.size ?? item.size,
         font: op.font ?? item.font,
         y: op.y === undefined ? item.y : op.y ?? undefined,
         animation: op.animation ?? item.animation

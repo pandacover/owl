@@ -4,7 +4,7 @@ import { applyEdits, EditFailure, type MediaInfo } from "../../src/timeline/appl
 import type { EditOp } from "../../src/timeline/Ops.ts"
 
 const media: Record<string, MediaInfo> = {
-  m_a: { id: "m_a", name: "a.mp4", kind: "video", duration: 20, width: 1080, height: 1920, fps: 29.97, hasAudio: true, hasTranscript: true, shots: [{ index: 1, start: 0, end: 8, moments: [{ start: 0, end: 3 }, { start: 3, end: 8 }] }, { index: 2, start: 8, end: 20 }] },
+  m_a: { id: "m_a", name: "a.mp4", kind: "video", duration: 20, width: 1080, height: 1920, fps: 29.97, hasAudio: true, hasTranscript: true, shots: [{ index: 1, start: 0, end: 8, moments: [{ start: 0, end: 3, keyframe: 1.5 }, { start: 3, end: 8, keyframe: 4.2 }] }, { index: 2, start: 8, end: 20 }] },
   m_b: { id: "m_b", name: "b.mp4", kind: "video", duration: 10, width: 1920, height: 1080, fps: 25, hasAudio: true, hasTranscript: false, shots: [] },
   m_s: { id: "m_s", name: "song.mp3", kind: "audio", duration: 120, width: 0, height: 0, fps: 0, hasAudio: true, hasTranscript: false, shots: [] },
   m_i: { id: "m_i", name: "logo.png", kind: "image", duration: 0, width: 800, height: 600, fps: 0, hasAudio: false, hasTranscript: false, shots: [] }
@@ -147,5 +147,25 @@ describe("applyEdits", () => {
     const graded = run(p, [{ op: "set_output", look: "cinematic" }])
     expect(graded.timeline.output.look).toBe("cinematic")
     expect(run(graded, [{ op: "set_output", look: null }]).timeline.output.look).toBeUndefined()
+  })
+
+  it("holds a freeze frame that survives splits and ignores speed", () => {
+    let p = run(empty, [{
+      op: "set_main",
+      clips: [
+        { media: "m_a", shot: 1, moment: 2, freeze: 2 },
+        { media: "m_b", out: 3, freeze: 1.5 },
+        { media: "m_b", in: 4, freeze: 1 }
+      ]
+    }])
+    expect(p.timeline.main.map((c) => [c.freeze, c.in, c.out, c.volume])).toEqual([[4.2, 4.2, 6.2, 0], [2.96, 2.96, 4.46, 0], [4, 4, 5, 0]])
+    expect(mainDuration(p.timeline.main)).toBe(4.5)
+    p = run(p, [{ op: "split_clip", at: 1 }])
+    expect(p.timeline.main.slice(0, 2).map((c) => c.freeze)).toEqual([4.2, 4.2])
+    expect(() => run(p, [{ op: "update", id: "c2", speed: 2 }])).toThrow(/freeze frame/)
+    expect(() => run(p, [{ op: "trim_clip", clip: "c2", out: 5 }])).toThrow(/freeze frame/)
+    p = run(p, [{ op: "update", id: "c2", freeze: 3 }])
+    expect(mainDuration(p.timeline.main)).toBe(6)
+    expect(() => run(empty, [{ op: "set_main", clips: [{ media: "m_i", freeze: 1 }] }])).toThrow(/needs a video/)
   })
 })

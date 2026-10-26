@@ -50,18 +50,20 @@ export const describeProject = (project: Project, sources: DescribeSources, deta
     const c = p.clip
     const extras: Array<string> = []
     if (c.speed !== 1) extras.push(`${c.speed}x`)
-    if (c.volume !== 1) extras.push(c.volume === 0 ? "muted" : `vol ${c.volume}`)
+    if (c.volume !== 1 && c.freeze === undefined) extras.push(c.volume === 0 ? "muted" : `vol ${c.volume}`)
     if (c.fit !== "auto") extras.push(fitText(c.fit, c.card))
     if (c.zoom) extras.push(zoomText(c.zoom))
     if (c.glow) extras.push(`glow ${c.glow}`)
     if (c.transition) extras.push(`${c.transition.type} ${c.transition.duration}s in`)
     lines.push(
       `  ${c.id}  ${formatRange(p.start, p.end)}  ${c.mediaId} ${quote(sources.name(c.mediaId), 30)} ${
-        formatRange(c.in, c.out)
+        c.freeze !== undefined ? `freeze frame at ${formatTime(c.freeze)}, ${round1(c.out - c.in)}s` : formatRange(c.in, c.out)
       }${extras.length ? `  ${extras.join(", ")}` : ""}`
     )
     if (detailed) {
-      const visual = sources.visual?.(c.mediaId, c.in, c.out)
+      const visual = c.freeze !== undefined
+        ? sources.visual?.(c.mediaId, c.freeze, c.freeze + 0.05)
+        : sources.visual?.(c.mediaId, c.in, c.out)
       if (visual) lines.push(`      sees: ${visual}`)
       const speech = sources.speech?.(c.mediaId, c.in, c.out)
       if (speech) lines.push(`      says: ${quote(speech, 400)}`)

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto"
+import { createReadStream } from "node:fs"
 import { Context, Effect, FileSystem, Layer, Option, Semaphore, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OwlConfig } from "../Config.ts"
 import { extractFrames, fitLongSide } from "../analysis/frames.ts"
 import { runAudioAnalysis } from "../analysis/runAudio.ts"
-import { buildShots, parseSceneMetadata } from "../analysis/shots.ts"
+import { buildShots, DETECTOR, parseSceneMetadata } from "../analysis/shots.ts"
 import { ENCODER_THREADS } from "../render/graph.ts"
 import type { Analysis, AudioAnalysis, MediaRecord, Probe, Shot, Transcript } from "../domain/Media.ts"
 import { OwlError } from "../domain/Errors.ts"
@@ -133,6 +135,12 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           yield* storage.commitFile(record.sourceKey, type || "application/octet-stream")
         })
 
+      /** Frame-to-frame change and scene scores, written to the work folder for parseSceneMetadata. */
+      const sceneStats = (work: string) =>
+        "scale=128:-2:flags=fast_bilinear,format=yuv420p,scdet=threshold=10," +
+        `metadata=mode=print:key=lavfi.scd.mafd:file=${work}/mafd.txt,` +
+        `metadata=mode=print:key=lavfi.scd.score:file=${work}/score.txt`
+
       const pass1 = (record: MediaRecord, source: string, probe: Probe, work: string) =>
         Effect.gen(function*() {
           const graph: Array<string> = []
@@ -142,9 +150,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
             graph.push(
               "[0:v]split=2[vp][va]",
               `[vp]${fitLongSide(PROXY_SIZE)}:flags=bilinear,format=yuv420p[vproxy]`,
-              "[va]scale=128:-2:flags=fast_bilinear,format=yuv420p,scdet=threshold=10," +
-                `metadata=mode=print:key=lavfi.scd.mafd:file=${work}/mafd.txt,` +
-                `metadata=mode=print:key=lavfi.scd.score:file=${work}/score.txt,nullsink`
+              `[va]${sceneStats(work)},nullsink`
             )
           }
           if (probe.hasAudio) {
@@ -255,12 +261,44 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           return shots.map((s) => merged.has(s.index) ? { ...s, caption: merged.get(s.index) } : s)
         })
 
+      const fileHash = (path: string) =>
+        Effect.callback<string>((resume) => {
+          const hash = createHash("sha256")
+          const stream = createReadStream(path)
+          stream.on("data", (chunk) => hash.update(chunk))
+          stream.on("end", () => resume(Effect.succeed(hash.digest("hex"))))
+          stream.on("error", () => resume(Effect.succeed("")))
+          return Effect.sync(() => stream.destroy())
+        })
+
+      /** An earlier media item with the same file, if any. */
+      const earlierCopy = (id: string, hash: string) =>
+        library.list.pipe(Effect.map((all) =>
+          hash ? all.find((r) => r.id !== id && r.hash === hash && r.status !== "failed" && !r.duplicateOf) : undefined
+        ))
+
       const analyze = (id: string) =>
         Effect.gen(function*() {
           let record = yield* library.get(id)
           yield* library.update(id, (r) => ({ ...r, status: "importing", error: undefined }))
           if (!(yield* storage.exists(record.sourceKey))) yield* download(record)
           const source = yield* storage.localPath(record.sourceKey)
+          const hash = record.hash ?? (yield* fileHash(source))
+          const copy = yield* earlierCopy(id, hash)
+          if (copy) {
+            // The same file again: point to the earlier item instead of analyzing and storing it twice.
+            yield* library.update(id, (r) => ({
+              ...r,
+              hash,
+              duplicateOf: copy.id,
+              status: "failed",
+              stages: {},
+              error: `Same file as ${copy.id} ${JSON.stringify(copy.name)}, which was added earlier. Use ${copy.id}.`
+            }))
+            yield* storage.remove(record.sourceKey).pipe(Effect.ignore)
+            return
+          }
+          record = yield* library.update(id, (r) => ({ ...r, hash }))
           const probe = yield* ffmpeg.probe(source)
           if (!probe.hasVideo && !probe.hasAudio) {
             return yield* OwlError.invalid("The file has no video or audio stream.")
@@ -274,7 +312,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           const work = `${config.cacheDir}/work/${id}`
           yield* fs.makeDirectory(work, { recursive: true })
 
-          let analysis: Analysis = { version: 1, shots: [] }
+          let analysis: Analysis = { version: 1, detector: DETECTOR, shots: [] }
           const save = (next: Analysis) =>
             Effect.suspend(() => {
               analysis = next
@@ -285,6 +323,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
             yield* saveFrames(record, source, [0])
             yield* save({
               version: 1,
+              detector: DETECTOR,
               shots: [{ index: 1, start: 0, end: 0, motion: 0, motionLabel: "static", keyframes: [0] }]
             })
             for (const stage of ["proxy", "shots", "audio", "transcript"] as const) {
@@ -409,9 +448,84 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           )
         })
 
+      /**
+       * Redoes shot and moment detection from the stored proxy for media analyzed
+       * by an older detector. Shots that come out unchanged keep their captions,
+       * so only new or changed shots go to vision again.
+       */
+      const redetect = (id: string) =>
+        Effect.gen(function*() {
+          const record = yield* library.get(id)
+          const old = yield* library.analysis(id)
+          if (Option.isNone(old) || !record.probe?.hasVideo || record.probe.kind !== "video") return
+          if (!(yield* storage.exists(proxyKey(id)))) return
+          const work = `${config.cacheDir}/work/${id}-redetect`
+          yield* fs.makeDirectory(work, { recursive: true })
+          const proxy = yield* storage.localPath(proxyKey(id))
+          yield* ffmpeg.run(["-threads", "2", "-i", proxy, "-an", "-vf", sceneStats(work), "-f", "null", "-"])
+          const frames = parseSceneMetadata(
+            yield* fs.readFileString(`${work}/mafd.txt`),
+            yield* fs.readFileString(`${work}/score.txt`)
+          )
+          yield* fs.remove(work, { recursive: true, force: true }).pipe(Effect.ignore)
+          const near = (a: number, b: number) => Math.abs(a - b) < 0.05
+          const fresh = buildShots(frames, record.probe.duration)
+          const kept = fresh.map((shot) => {
+            const same = old.value.shots.find((o) =>
+              near(o.start, shot.start) && near(o.end, shot.end) &&
+              (o.moments?.length ?? 0) === 0 && (shot.moments?.length ?? 0) === 0
+            )
+            return same?.caption ? { ...shot, keyframes: same.keyframes, caption: same.caption } : shot
+          })
+          const changed = kept.filter((s) => !s.caption)
+          if (changed.length > 0) yield* saveFrames(record, proxy, changed.flatMap((s) => s.keyframes))
+          let shots: ReadonlyArray<Shot> = kept
+          if (changed.length > 0 && vision.available) {
+            const captioned = yield* captionAll(record, changed, old.value.transcript).pipe(Effect.option)
+            if (Option.isSome(captioned)) {
+              const byIndex = new Map(captioned.value.map((s) => [s.index, s]))
+              shots = kept.map((s) => byIndex.get(s.index) ?? s)
+            }
+          }
+          const analysis: Analysis = { ...old.value, detector: DETECTOR, shots }
+          yield* library.saveAnalysis(id, analysis)
+          yield* search.indexMedia(id)
+          yield* library.update(id, (r) => ({ ...r, summary: summarize(record.probe!, analysis) }))
+          yield* library.setStage(id, "shots", {
+            status: "done",
+            note: `${shots.length} shot${shots.length === 1 ? "" : "s"}`
+          })
+          yield* Effect.logInfo(`re-detected shots for ${id}: ${shots.length} shots, ${changed.length} recaptioned`)
+        }).pipe(
+          Effect.catch((error) => {
+            const e = error as { readonly message: string; readonly stderr?: string }
+            return Effect.logWarning(`re-detecting shots for ${id} failed: ${e.message}. ${errorSummary(e.stderr)}`)
+          })
+        )
+
       const resumePending = Effect.gen(function*() {
         for (const record of yield* library.list) {
-          if (record.status === "importing" || record.status === "analyzing") yield* start(record.id)
+          if (record.status === "importing" || record.status === "analyzing") {
+            yield* start(record.id)
+          } else if (record.status === "ready" && !record.hash && storage.kind === "local") {
+            // Older items get a hash so new uploads of the same file are caught. On R2 this would download every source, so it is skipped.
+            yield* storage.localPath(record.sourceKey).pipe(
+              Effect.flatMap(fileHash),
+              Effect.flatMap((hash) => hash ? library.update(record.id, (r) => ({ ...r, hash })) : Effect.void),
+              Effect.ignore,
+              Effect.forkIn(scope)
+            )
+          }
+          if (record.status === "ready" && record.probe?.kind === "video") {
+            const analysis = yield* library.analysis(record.id).pipe(Effect.orElseSucceed(() => Option.none<Analysis>()))
+            if (Option.isSome(analysis) && analysis.value.detector !== DETECTOR && !running.has(record.id)) {
+              running.add(record.id)
+              yield* slots.withPermits(1)(activity.track(redetect(record.id))).pipe(
+                Effect.ensuring(Effect.sync(() => running.delete(record.id))),
+                Effect.forkIn(scope)
+              )
+            }
+          }
         }
       })
 

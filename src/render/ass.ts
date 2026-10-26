@@ -37,10 +37,31 @@ const ALIGN: Record<TextPosition, number> = {
 
 /** #RRGGBB to ASS &HAABBGGRR. */
 const assColor = (hex: string, alpha = 0) => {
-  const h = hex.replace("#", "")
+  const h = hex.replace("#", "").slice(0, 6)
   const a = alpha.toString(16).padStart(2, "0").toUpperCase()
   return `&H${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`.toUpperCase()
 }
+
+/** ASS alpha (0 opaque, 255 clear) from the optional opacity digits of #RRGGBBAA. */
+const assAlpha = (hex: string): number => {
+  const h = hex.replace("#", "")
+  return h.length === 8 ? 255 - parseInt(h.slice(6, 8), 16) : 0
+}
+
+/** Box padding for text that gets a box only because a background was given. */
+const BOX_PAD = 0.3
+
+/** The style a text item draws with: its own, or a boxed version when it has a background but no box. */
+const itemSpec = (item: TextItem): StyleSpec => {
+  const style = TEXT_STYLES[item.style]
+  if (!item.background || style.border === 3) return style
+  return { ...style, border: 3, outline: style.size * BOX_PAD, shadow: 0, soft: false }
+}
+
+const styleKey = (item: TextItem) =>
+  `${item.style}.${item.position}.${item.font ?? TEXT_STYLES[item.style].font}${
+    item.background && TEXT_STYLES[item.style].border !== 3 ? ".box" : ""
+  }`
 
 /** Relative luminance of a #RRGGBB color, 0 (black) to 1 (white). */
 const luminance = (hex: string) => {
@@ -155,7 +176,8 @@ const anchor = (align: number, output: OutputSettings, marginV: number) => {
 }
 
 const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
-  const style = TEXT_STYLES[item.style]
+  const style = itemSpec(item)
+  const base = Math.min(output.width, output.height)
   // An explicit y pins the top of the text at that height; the position still decides left, center or right.
   const pinned = item.y !== undefined
   const horizontal = ALIGN[item.position] % 3
@@ -165,11 +187,14 @@ const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
     : anchor(align, output, marginV)
   const raw = style.uppercase ? item.text.toUpperCase() : item.text
   const color = item.color ? `\\c${assColor(item.color)}` : ""
-  const box = item.background && style.border === 3 ? `\\3c${assColor(item.background)}` : ""
+  const box = item.background && style.border === 3
+    ? `\\3c${assColor(item.background)}\\3a&H${assAlpha(item.background).toString(16).padStart(2, "0").toUpperCase()}&`
+    : ""
   // A dark halo helps light text over video; behind dark text it only smudges, so dark text gets none.
   const darkText = item.color !== undefined && luminance(item.color) < 0.45
   const soft = style.border === 3 ? "" : darkText ? "\\bord0\\shad0" : style.soft ? "\\blur6" : ""
-  const lead = `{${color}${box}${soft}}`
+  const size = item.size !== undefined && item.size !== 1 ? `\\fs${Math.max(1, Math.round(style.size * base * item.size))}` : ""
+  const lead = `{${color}${box}${soft}${size}}`
   const durationMs = Math.round((item.end - item.start) * 1000)
   let tags = pinned ? `\\an${align}\\pos(${point.x},${point.y})` : ""
   let body = escapeText(raw)
@@ -208,8 +233,10 @@ const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
           .map((part, i) => {
             const t = (offset + i) * step
             const fade = letters ? 1 : 220
-            const sharpen = letters ? "" : "\\blur6"
-            return `{\\alpha&HFF&${sharpen}\\t(${t},${t + fade},\\alpha&H00&${letters ? "" : "\\blur0"})}${part}`
+            const sharpen = letters || style.border === 3 ? "" : "\\blur6"
+            // In a box only the letters fade in, so the box stays put.
+            const a = style.border === 3 ? "\\1a" : "\\alpha"
+            return `{${a}&HFF&${sharpen}\\t(${t},${t + fade},${a}&H00&${sharpen ? "\\blur0" : ""})}${part}`
           })
           .join(letters ? "" : " ")
         offset += parts.length
@@ -219,7 +246,7 @@ const textEvent = (item: TextItem, output: OutputSettings, marginV: number) => {
       break
     }
   }
-  return `Dialogue: 1,${assTime(item.start)},${assTime(item.end)},${item.style}.${item.position}.${item.font ?? style.font},,0,0,0,,${
+  return `Dialogue: 1,${assTime(item.start)},${assTime(item.end)},${styleKey(item)},,0,0,0,,${
     tags ? `{${tags}}` : ""
   }${lead === "{}" ? "" : lead}${body}`
 }
@@ -313,10 +340,9 @@ export const buildAss = (
   const marginH = Math.round(out.width * 0.06)
   const marginV = Math.round(out.height * 0.06)
   const styles: Array<string> = []
-  const used = new Set(timeline.texts.map((t) => `${t.style}.${t.position}.${t.font ?? TEXT_STYLES[t.style].font}`))
-  for (const key of used) {
-    const [style, position, font] = key.split(".") as [TextStyle, TextPosition, TextFont]
-    styles.push(styleLine(key, TEXT_STYLES[style], base, ALIGN[position], [marginH, marginH, marginV], font))
+  const used = new Map(timeline.texts.map((t) => [styleKey(t), t]))
+  for (const [key, t] of used) {
+    styles.push(styleLine(key, itemSpec(t), base, ALIGN[t.position], [marginH, marginH, marginV], t.font ?? TEXT_STYLES[t.style].font))
   }
   if (captions) {
     const align = captions.position === "top" ? 8 : captions.position === "center" ? 5 : 2

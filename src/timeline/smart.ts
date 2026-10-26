@@ -26,6 +26,7 @@ const toTimeline = (
   for (const p of placeMain(timeline.main)) {
     if (clipIds && !clipIds.includes(p.clip.id)) continue
     const c = p.clip
+    if (c.freeze !== undefined) continue
     // Keep transition overlaps intact: only cut inside the part of the clip that plays alone.
     const lead = p.index > 0 && c.transition ? c.transition.duration : 0
     const next = timeline.main[p.index + 1]

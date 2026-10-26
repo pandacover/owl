@@ -70,6 +70,11 @@ export interface MainClip {
   readonly card?: CardSettings | undefined
   /** Blank clips only: a soft light drifting across the background, in this color. */
   readonly glow?: string | undefined
+  /**
+   * Freeze frame: the source time of the one frame this clip holds. in and out
+   * then only set the length, and the clip is silent.
+   */
+  readonly freeze?: number | undefined
 }
 
 /** Media id for a blank title card: the output background, no media. */
@@ -142,8 +147,10 @@ export interface TextItem {
   readonly style: TextStyle
   readonly position: TextPosition
   readonly color?: string | undefined
-  /** Box color for highlight, cta, label and lower_third. */
+  /** Box color, #RRGGBB or #RRGGBBAA. Gives any style a box. */
   readonly background?: string | undefined
+  /** Font size relative to the style's default. */
+  readonly size?: number | undefined
   /** Default depends on style. */
   readonly font?: TextFont | undefined
   /** Pins the top of the text at this height, 0 to 1. Overrides the vertical part of `position`. */

@@ -13,6 +13,9 @@ export interface FrameStat {
 }
 
 /** Parses the two files written by `metadata=mode=print:key=...` for mafd and score. */
+/** Bump when shot or moment detection changes, so stored analyses are redone. */
+export const DETECTOR = 2
+
 export const parseSceneMetadata = (mafdText: string, scoreText: string): Array<FrameStat> => {
   const read = (text: string, key: string) => {
     const out = new Map<number, number>()
@@ -88,44 +91,41 @@ export const planKeyframes = (start: number, end: number): Array<number> => {
 const MOMENT_ACTIVE = 0.8
 /** A burst must peak this high, so compression noise is never a step. */
 const MOMENT_PEAK = 2
-const MOMENT_MIN = 1
+const MOMENT_MIN = 0.8
 const MOMENT_MAX = 12
 
 /**
  * Splits a mostly still shot at bursts of change: screen recordings, slides,
  * tripod shots where something appears. Returns nothing when the shot is one
  * continuous scene, so ordinary camera footage keeps whole shots.
+ *
+ * Everything is weighted by time, not frame count: phone screen recordings
+ * are variable frame rate and store frames mostly while the screen changes.
  */
 export const detectMoments = (frames: ReadonlyArray<FrameStat>, start: number, end: number): Array<Moment> => {
   if (end - start < 2 * MOMENT_MIN + 0.5) return []
   const inside = frames.filter((f) => f.t > start + 0.05 && f.t < end - 0.02)
-  if (inside.length < 10) return []
-  // Smooth over a few frames so one noisy frame is not a burst.
-  const smooth = inside.map((_, i) => {
-    let sum = 0
-    let count = 0
-    for (let j = Math.max(0, i - 2); j <= Math.min(inside.length - 1, i + 2); j++) {
-      sum += inside[j]!.mafd
-      count++
-    }
-    return sum / count
-  })
-  // Bursts must stand out from the shot's own noise floor.
-  const median = [...smooth].sort((a, b) => a - b)[Math.floor(smooth.length / 2)]!
+  if (inside.length < 4) return []
+  // How long each frame stays on screen.
+  const held = inside.map((f, i) => Math.max(0, Math.min(1, (inside[i + 1]?.t ?? end) - f.t)))
+  const total = held.reduce((a, b) => a + b, 0)
+  if (total <= 0) return []
+  const byValue = inside.map((f, i) => ({ v: f.mafd, w: held[i]! })).sort((a, b) => a.v - b.v)
+  let acc = 0
+  const median = byValue.find((x) => (acc += x.w) >= total / 2)?.v ?? 0
   const active = Math.max(MOMENT_ACTIVE, median * 2.5)
-  const activeShare = smooth.filter((v) => v > active).length / smooth.length
+  const activeTime = inside.reduce((sum, f, i) => sum + (f.mafd > active ? held[i]! : 0), 0)
   // Constant motion means camera footage, not discrete steps.
-  if (activeShare > 0.6) return []
+  if (activeTime / total > 0.6) return []
   const bursts: Array<{ start: number; end: number; peak: number }> = []
-  smooth.forEach((v, i) => {
-    if (v <= active) return
-    const t = inside[i]!.t
+  for (const f of inside) {
+    if (f.mafd <= active) continue
     const last = bursts[bursts.length - 1]
-    if (last && t - last.end < 0.4) {
-      last.end = t
-      last.peak = Math.max(last.peak, v)
-    } else bursts.push({ start: t, end: t, peak: v })
-  })
+    if (last && f.t - last.end < 0.4) {
+      last.end = f.t
+      last.peak = Math.max(last.peak, f.mafd)
+    } else bursts.push({ start: f.t, end: f.t, peak: f.mafd })
+  }
   const candidates = bursts
     .filter((b) => b.peak >= Math.max(MOMENT_PEAK, median * 4))
     .filter((b) => b.start - start >= MOMENT_MIN * 0.8 && end - b.start >= MOMENT_MIN * 0.8)
@@ -162,8 +162,11 @@ export const buildShots = (
     const end = bounds[i + 1]!
     if (end - start <= 0.01) continue
     // Skip the frames at the cut itself so the cut does not count as motion.
+    // Weighted by how long each frame is shown, since phone recordings store frames mostly while things move.
     const inside = frames.filter((f) => f.t > start + 0.05 && f.t < end - 0.02)
-    const mafd = inside.length ? inside.reduce((s, f) => s + f.mafd, 0) / inside.length : 0
+    const held = inside.map((f, i) => Math.max(0, Math.min(1, (inside[i + 1]?.t ?? end) - f.t)))
+    const heldTotal = held.reduce((a, b) => a + b, 0)
+    const mafd = heldTotal > 0 ? inside.reduce((s, f, i) => s + f.mafd * held[i]!, 0) / heldTotal : 0
     const moments = detectMoments(frames, start, end)
     shots.push({
       index: shots.length + 1,

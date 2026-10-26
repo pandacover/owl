@@ -47,6 +47,10 @@ export interface MediaRecord {
   readonly error?: string | undefined
   /** Short summary built after analysis, e.g. "12 shots, music at 118 BPM, no speech". */
   readonly summary?: string | undefined
+  /** SHA-256 of the source file, to spot the same file uploaded twice. */
+  readonly hash?: string | undefined
+  /** Set when this upload was the same file as an earlier media item, which should be used instead. */
+  readonly duplicateOf?: string | undefined
 }
 
 export interface ShotCaption {
@@ -131,6 +135,8 @@ export interface Transcript {
 
 export interface Analysis {
   readonly version: 1
+  /** Shot and moment detector that produced `shots`. Older analyses are re-detected at startup. */
+  readonly detector?: number | undefined
   readonly shots: ReadonlyArray<Shot>
   readonly audio?: AudioAnalysis | undefined
   readonly transcript?: Transcript | undefined

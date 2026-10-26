@@ -124,8 +124,19 @@ export const registerTools = Effect.gen(function*() {
       Effect.gen(function*() {
         let project = yield* projects.create(name)
         if (aspect) project = (yield* projects.edit(project.id, [{ op: "set_output", aspect }])).project
-        return `Created ${project.id} ${JSON.stringify(name)}${aspect ? ` at ${aspect}` : ""}. Add clips with timeline_edit.`
+        return `Created ${project.id} ${JSON.stringify(name)}${aspect ? ` at ${aspect}` : ""}. Add clips with timeline_edit.` +
+          " If you have not yet, read edit_guide \"principles\" and the recipe for this format first: the user expects a premium result."
       })
+  })
+
+  yield* registerTool({
+    name: "project_delete",
+    title: "Delete project",
+    description: "Delete an edit project and its undo history. Media and finished render links are kept.",
+    params: Schema.Struct({ project: ProjectId }),
+    destructive: true,
+    handle: ({ project }) =>
+      projects.remove(project).pipe(Effect.map((p) => `Deleted ${p.id} ${JSON.stringify(p.name)}.`))
   })
 
   yield* registerTool({
@@ -190,7 +201,7 @@ export const registerTools = Effect.gen(function*() {
       library.list.pipe(Effect.map((list) =>
         list.length === 0
           ? "No media yet. Use media_upload_link or media_import."
-          : [...list].reverse().map(mediaLine).join("\n")
+          : [...list].reverse().filter((r) => !r.duplicateOf).map(mediaLine).join("\n")
       ))
   })
 
@@ -399,7 +410,7 @@ export const registerTools = Effect.gen(function*() {
     name: "timeline_edit",
     title: "Edit timeline",
     description:
-      `Change the edit with a list of operations, applied in order as one undoable step. If any operation fails, nothing changes and the error says which one and why.
+      `Change the edit with a list of operations, applied in order as one undoable step. If any operation fails, nothing changes and the error says which one and why. Read edit_guide (principles and a recipe) before the first edit.
 
 Operations (field "op"): add_clips, set_main, trim_clip, split_clip, move_clip, delete_range (main track; later content ripples), add_overlay (B-roll, picture-in-picture, logo), add_audio (music ducks under speech by default), add_text, set_captions (burned in from speech), set_output (16:9, 9:16, 1:1, 4:5), update and delete (any item by id).
 

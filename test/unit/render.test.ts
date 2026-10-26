@@ -96,6 +96,24 @@ describe("render building blocks", () => {
     expect(ass.match(/\\alpha&HFF&/g)!.length).toBe(3)
   })
 
+  it("boxes any style that has a background, with opacity and size", () => {
+    const t: Timeline = {
+      ...timeline,
+      captions: undefined,
+      texts: [
+        { id: "t1", text: "Calm line", start: 0, end: 2, style: "statement", position: "center", animation: "words", background: "#0B0B0FB3", size: 1.5 },
+        { id: "t2", text: "Plain", start: 0, end: 2, style: "statement", position: "center", animation: "fade" }
+      ]
+    }
+    const ass = buildAss(t, [])!
+    const boxed = ass.split("\n").find((l) => l.startsWith("Style: statement.center.light.box"))!
+    expect(boxed.split(",")[15]).toBe("3")
+    expect(ass).toContain("Style: statement.center.light,")
+    expect(ass).toContain("\\3c&H000F0B0B\\3a&H4C&")
+    expect(ass).toMatch(/\\fs94/)
+    expect(ass).toContain("\\1a&HFF&")
+  })
+
   it("builds a card with finite loops, zoom and blur", () => {
     const t: Timeline = {
       ...timeline,
@@ -119,6 +137,23 @@ describe("render building blocks", () => {
     expect(graph).toContain("perspective=")
     expect(graph).toContain("gblur")
     expect(graph).not.toMatch(/loop=loop=-1/)
+  })
+
+  it("renders a freeze frame from one seeked frame, silent", () => {
+    const t: Timeline = { ...timeline, main: [clip("c1", 4, 6, { freeze: 4, volume: 0 })], texts: [], audio: [], captions: undefined }
+    const { args, duration } = buildRender({
+      timeline: t,
+      source: (id) => ({ path: `/x/${id}.mp4`, kind: "video", hasAudio: true, width: 1080, height: 1920 }),
+      canvas: { width: 540, height: 960, fps: 30, background: "#000000" },
+      speech: [],
+      quality: "draft",
+      output: "/x/out.mp4"
+    })
+    const graph = args[args.indexOf("-filter_complex") + 1]!
+    expect(duration).toBe(2)
+    expect(graph).toContain("trim=end_frame=1,tpad=stop_mode=clone:stop=60")
+    expect(graph).toContain("anullsrc")
+    expect(args.filter((a) => a === "-i")).toHaveLength(1)
   })
 })
 
