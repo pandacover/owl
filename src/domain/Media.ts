@@ -131,6 +131,8 @@ export interface Transcript {
 
 export interface Analysis {
   readonly version: 1
+  /** Shot and moment detector that produced `shots`. Older analyses are re-detected at startup. */
+  readonly detector?: number | undefined
   readonly shots: ReadonlyArray<Shot>
   readonly audio?: AudioAnalysis | undefined
   readonly transcript?: Transcript | undefined
