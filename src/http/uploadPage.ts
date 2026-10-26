@@ -41,7 +41,7 @@ export const uploadPage = `<!doctype html>
 <main>
   <h1>Upload to owl</h1>
   <p>Add videos, music or images. Keep this page open until every file says done, then go back to Claude.</p>
-  <label class="pick">Choose files<span>Video, audio or images, any size</span><input id="files" type="file" multiple accept="video/*,audio/*,image/*"></label>
+  <label class="pick">Choose files<span>Video, audio or images, any size</span><input id="files" type="file" multiple></label>
   <ul id="list"></ul>
 </main>
 <script>
