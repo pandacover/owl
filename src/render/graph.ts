@@ -57,6 +57,8 @@ export interface GraphInput {
   readonly output: string
   /** Render a single frame as a JPEG instead of a video. */
   readonly still?: boolean | undefined
+  /** With still: the frame at this time of the timeline instead of the first. */
+  readonly stillAt?: number | undefined
 }
 
 const SAMPLE_RATE = 48000
@@ -296,8 +298,15 @@ const imageInput = (src: SourceInfo, fps: number, seconds: number) => [
   src.path
 ]
 
-const seekInput = (path: string, start: number, length: number, threads: boolean) => [
+/**
+ * A seeked input. Video and audio of a clip are opened as separate inputs:
+ * when one demuxer feeds both, reading ahead for audio makes FFmpeg decode
+ * and queue the whole video range at full size (gigabytes for slowed phone
+ * recordings) long before the video is needed.
+ */
+const seekInput = (path: string, start: number, length: number, threads: boolean, only?: "video" | "audio") => [
   ...(threads ? ["-threads", "2"] : []),
+  ...(only === "video" ? ["-an"] : only === "audio" ? ["-vn"] : []),
   "-ss",
   n(start),
   "-t",
@@ -333,7 +342,7 @@ const mainSegment = (
   const span = clip.out - clip.in
   const index = src.kind === "image"
     ? g.input(imageInput(src, fps, seconds))
-    : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs))
+    : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs, "video"))
   const raw = g.label("raw")
   g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(clip.speed)},fps=${fps}[${raw}]`)
   const fitted = fitInto(g, raw, effectiveFit(clip.fit, src, w, h), src, w, h, canvas, {
@@ -352,7 +361,7 @@ const mainSegment = (
     const fade = Math.min(0.012, seconds / 4)
     g.add(
       [
-        `[${index}:a]asetpts=PTS-STARTPTS`,
+        `[${g.input(seekInput(src.path, clip.in, span + 2 / fps, false, "audio"))}:a]asetpts=PTS-STARTPTS`,
         ...atempo(clip.speed),
         AUDIO_FORMAT,
         `volume=${n(clip.volume)}`,
@@ -410,37 +419,76 @@ const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames:
     )
   )
 
+  // Each transition blends two short pieces: the last frames of one clip and
+  // the first frames of the next, both exactly the overlap long. The pieces
+  // and the clip bodies between them are joined by one concat. No transition
+  // depends on the output of another, so lengths are exact and FFmpeg
+  // versions agree (chained xfade offsets broke on FFmpeg 7).
   const still = input.still === true
-  let pending: Array<Segment> = []
-  let acc: Segment | undefined
-  const flush = (): Segment => {
-    if (pending.length === 1) return pending[0]!
-    const v = g.label("cv")
-    const a = still ? "" : g.label("ca")
-    const pads = pending.map((s) => still ? `[${s.v}]` : `[${s.v}][${s.a}]`).join("")
-    g.add(`${pads}concat=n=${pending.length}:v=1:a=${still ? 0 : 1}[${v}]${still ? "" : `[${a}]`}`)
-    return { v, a, frames: pending.reduce((sum, s) => sum + s.frames, 0) }
-  }
-  placed.forEach((p, i) => {
-    const seg = segments[i]!
-    const transition = p.clip.transition
-    if (i === 0 || !transition) {
-      pending.push(seg)
-      return
-    }
-    acc = flush()
-    const overlap = Math.max(1, toFrame(placed[i - 1]!.end) - toFrame(p.start))
-    const v = g.label("xv")
-    const a = still ? "" : g.label("xa")
-    g.add(
-      `[${acc.v}][${seg.v}]xfade=transition=${XFADE[transition.type] ?? "fade"}:duration=${n(overlap / fps)}:offset=${
-        n((acc.frames - overlap) / fps)
-      }[${v}]`
-    )
-    if (!still) g.add(`[${acc.a}][${seg.a}]acrossfade=d=${n(overlap / fps)}:c1=tri:c2=tri[${a}]`)
-    pending = [{ v, a, frames: acc.frames + seg.frames - overlap }]
+  const overlaps = placed.map((p, i) => {
+    if (i === 0 || !p.clip.transition) return 0
+    const prev = segments[i - 1]!.frames
+    return Math.max(0, Math.min(toFrame(placed[i - 1]!.end) - toFrame(p.start), Math.floor(prev / 2), Math.floor(segments[i]!.frames / 2)))
   })
-  return flush()
+  const samples = (frames: number) => Math.round((frames / fps) * SAMPLE_RATE)
+  const parts: Array<Segment> = []
+  const tails: Array<Segment | undefined> = []
+  segments.forEach((seg, i) => {
+    const head = overlaps[i]!
+    const tail = overlaps[i + 1] ?? 0
+    const body = seg.frames - head - tail
+    const cuts = [
+      { name: "head", from: 0, to: head },
+      { name: "body", from: head, to: head + body },
+      { name: "tail", from: head + body, to: seg.frames }
+    ].filter((c) => c.to > c.from)
+    const pieces = new Map<string, Segment>()
+    if (cuts.length === 1) {
+      pieces.set(cuts[0]!.name, seg)
+    } else {
+      const vs = cuts.map(() => g.label("pv"))
+      const as = cuts.map(() => still ? "" : g.label("pa"))
+      g.add(`[${seg.v}]split=${cuts.length}${vs.map((l) => `[${l}]`).join("")}`)
+      if (!still) g.add(`[${seg.a}]asplit=${cuts.length}${as.map((l) => `[${l}]`).join("")}`)
+      cuts.forEach((c, k) => {
+        const v = g.label("tv")
+        g.add(`[${vs[k]}]trim=start_frame=${c.from}:end_frame=${c.to},setpts=PTS-STARTPTS[${v}]`)
+        let a = ""
+        if (!still) {
+          a = g.label("ta")
+          g.add(`[${as[k]}]atrim=start_sample=${samples(c.from)}:end_sample=${samples(c.to)},asetpts=PTS-STARTPTS[${a}]`)
+        }
+        pieces.set(c.name, { v, a, frames: c.to - c.from })
+      })
+    }
+    const headPiece = pieces.get("head")
+    const prevTail = tails[i - 1]
+    if (headPiece && prevTail) {
+      const transition = placed[i]!.clip.transition!
+      const seconds = n(head / fps)
+      const v = g.label("xv")
+      g.add(`[${prevTail.v}][${headPiece.v}]xfade=transition=${XFADE[transition.type] ?? "fade"}:duration=${seconds}:offset=0[${v}]`)
+      let a = ""
+      if (!still) {
+        const out = g.label("xo")
+        const into = g.label("xi")
+        a = g.label("xa")
+        g.add(`[${prevTail.a}]afade=t=out:d=${seconds}[${out}]`)
+        g.add(`[${headPiece.a}]afade=t=in:d=${seconds}[${into}]`)
+        g.add(`[${out}][${into}]amix=inputs=2:normalize=0:duration=longest[${a}]`)
+      }
+      parts.push({ v, a, frames: head })
+    }
+    const bodyPiece = pieces.get("body")
+    if (bodyPiece) parts.push(bodyPiece)
+    tails.push(pieces.get("tail"))
+  })
+  if (parts.length === 1) return parts[0]!
+  const v = g.label("cv")
+  const a = still ? "" : g.label("ca")
+  const pads = parts.map((s) => still ? `[${s.v}]` : `[${s.v}][${s.a}]`).join("")
+  g.add(`${pads}concat=n=${parts.length}:v=1:a=${still ? 0 : 1}[${v}]${still ? "" : `[${a}]`}`)
+  return { v, a, frames: parts.reduce((sum, s) => sum + s.frames, 0) }
 }
 
 const LAYOUT_SCALE = 0.32
@@ -489,7 +537,7 @@ const overlayLayer = (
   const seconds = clipDuration(o)
   const index = src.kind === "image"
     ? g.input(imageInput(src, canvas.fps, seconds))
-    : g.input(seekInput(src.path, o.in, o.out - o.in + 2 / canvas.fps, manyInputs))
+    : g.input(seekInput(src.path, o.in, o.out - o.in + 2 / canvas.fps, manyInputs, "video"))
   const box = layoutBox(o.layout, src, canvas.width, canvas.height)
   const raw = g.label("or")
   g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(o.speed)},fps=${canvas.fps},trim=end=${n(seconds)}[${raw}]`)
@@ -510,7 +558,7 @@ const overlayLayer = (
     const a = g.label("oa")
     const delay = Math.round(o.start * 1000)
     g.add(
-      [`[${index}:a]asetpts=PTS-STARTPTS`, ...atempo(o.speed), AUDIO_FORMAT, `atrim=end=${n(seconds)}`, `volume=${n(o.volume)}`]
+      [`[${g.input(seekInput(src.path, o.in, o.out - o.in + 2 / canvas.fps, false, "audio"))}:a]asetpts=PTS-STARTPTS`, ...atempo(o.speed), AUDIO_FORMAT, `atrim=end=${n(seconds)}`, `volume=${n(o.volume)}`]
         .concat(o.fadeIn > 0 ? [`afade=t=in:d=${n(o.fadeIn)}`] : [])
         .concat(o.fadeOut > 0 ? [`afade=t=out:st=${n(Math.max(0, seconds - o.fadeOut))}:d=${n(o.fadeOut)}`] : [])
         .concat([`adelay=${delay}:all=1`])
@@ -634,7 +682,8 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
     v = out
   }
   const vout = g.label("vout")
-  g.add(`[${v}]format=yuv420p[${vout}]`)
+  const pick = still && input.stillAt ? `trim=start_frame=${Math.round(input.stillAt * fps)},` : ""
+  g.add(`[${v}]${pick}format=yuv420p[${vout}]`)
 
   if (still) {
     return {

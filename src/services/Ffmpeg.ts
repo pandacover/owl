@@ -87,6 +87,16 @@ export const toProbe = (raw: typeof ProbeJson.Type): Probe => {
 
 const STDERR_TAIL = 4000
 
+const KILLED = "ffmpeg was stopped by the system before it finished, most likely because the server ran out of memory"
+
+/** The lines of FFmpeg's error output that explain a failure, without the shutdown noise that follows the cause. */
+export const errorSummary = (stderr: string | undefined): string => {
+  const lines = (stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean)
+  const noise = /Terminating thread|Task finished with error|Nothing was written|Conversion failed|Error while filtering|Error sending frames/
+  const causes = lines.filter((l) => !noise.test(l))
+  return [...new Set(causes.length > 0 ? causes : lines)].slice(0, 3).join(" | ").slice(0, 600)
+}
+
 export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg") {
   static readonly layer = Layer.effect(
     Ffmpeg,
@@ -152,7 +162,9 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
             })
           )
           yield* Effect.all([readStderr, readProgress], { concurrency: 2, discard: true })
-          const exitCode = yield* handle.exitCode
+          // No exit code means a signal ended it: on a small machine, the kernel's out-of-memory killer.
+          const exitCode = yield* handle.exitCode.pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)))
+          if (exitCode === undefined) return yield* new FfmpegError({ message: KILLED, stderr })
           if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
             return yield* new FfmpegError({ message: `ffmpeg exited with code ${exitCode}`, stderr })
           }
@@ -177,7 +189,8 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               Stream.runForEach((chunk) => Effect.sync(() => (stderr = (stderr + chunk).slice(-STDERR_TAIL))))
             )
           ], { concurrency: 2, discard: true })
-          const exitCode = yield* handle.exitCode
+          const exitCode = yield* handle.exitCode.pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)))
+          if (exitCode === undefined) return yield* new FfmpegError({ message: KILLED, stderr })
           if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
             return yield* new FfmpegError({ message: `ffmpeg exited with code ${exitCode}`, stderr })
           }
