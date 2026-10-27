@@ -346,7 +346,13 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               }
               const error = result.failure as { readonly message?: string }
               const middle = depth < 3 ? splitPoint(timeline, from, to, options.canvas.fps) : undefined
-              if (!error.message?.startsWith(STALLED) || middle === undefined) return yield* Effect.fail(result.failure)
+              if (!error.message?.startsWith(STALLED) || middle === undefined) {
+                return yield* Effect.fail(
+                  error.message?.startsWith(STALLED)
+                    ? { ...error, message: `${error.message}, piece ${round3(from)}s to ${round3(to)}s` }
+                    : result.failure
+                )
+              }
               yield* piece(from, middle, false, depth + 1)
               yield* piece(middle, to, last, depth + 1)
             })
