@@ -285,6 +285,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           yield* ffmpeg.run(args, {
             duration,
             stallSeconds: options.stallSeconds ?? STALL_SECONDS,
+            finishOnStall: options.piece !== undefined,
             onMemory: options.onMemory,
             ...(options.onProgress ? { onProgress: options.onProgress } : {})
           })
@@ -381,6 +382,18 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 return
               }
               const error = result.failure as { readonly message?: string }
+              // FFmpeg 7 sometimes holds back the end of a piece it has fully drawn. Told to
+              // finish, it writes the rest, and a piece with every frame and all its sound is kept.
+              if (error.message?.startsWith(STALLED)) {
+                const frames = Math.round((to - from) * fps)
+                const got = yield* ffmpeg.lengths(file).pipe(Effect.orElseSucceed(() => ({ videoFrames: 0, audioSeconds: 0 })))
+                if (got.videoFrames === frames && got.audioSeconds >= frames / fps - 1 / fps) {
+                  yield* options.note(`piece ${round3(from)}s to ${round3(to)}s ${error.message.slice(STALLED.length).trim()}, finished cleanly`)
+                  seconds += frames / fps
+                  files.push(file)
+                  return
+                }
+              }
               const middle = depth < 3 ? splitPoint(timeline, from, to, fps) : undefined
               if (!error.message?.startsWith(STALLED) || middle === undefined) {
                 return yield* Effect.fail(
