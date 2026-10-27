@@ -129,10 +129,11 @@ await box.fs.uploadFile(
   `${app}/supervise.sh`
 )
 
-// The supervisor restarts owl when it exits, so stopping the old process is
+// The supervisor restarts owl when it exits, so stopping the old process (and
+// any ffmpeg it started, which would outlive it) is
 // enough to load the new code. Start the supervisor if it is not running.
 console.log("Starting owl...")
-await box.process.executeCommand("pkill -f '[n]ode --env-file=.env src/main.ts' || true", app)
+await box.process.executeCommand("sh -c \"pkill -f '[n]ode --env-file=.env src/main.ts'; pkill -x ffmpeg; true\"", app)
 const supervised = await box.process.executeCommand("pgrep -f '[s]upervise.sh'", app)
 if (supervised.exitCode !== 0) {
   await box.process.deleteSession("owl").catch(() => undefined)
