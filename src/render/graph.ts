@@ -23,6 +23,8 @@ import {
 
 export interface SourceInfo {
   readonly path: string
+  /** A copy of the picture that is quicker to seek and decode, used instead of path for video. */
+  readonly videoPath?: string | undefined
   readonly kind: "video" | "audio" | "image"
   readonly hasAudio: boolean
   readonly width: number
@@ -357,12 +359,12 @@ const mainSegment = (
   const raw = g.label("raw")
   if (clip.freeze !== undefined) {
     // One frame, repeated before fitting so zoom moves across the hold.
-    const index = g.input(seekInput(src.path, clip.freeze, 2 / fps, manyInputs, "video"))
+    const index = g.input(seekInput(src.videoPath ?? src.path, clip.freeze, 2 / fps, manyInputs, "video"))
     g.add(`[${index}:v]setpts=PTS-STARTPTS,fps=${fps},trim=end_frame=1,tpad=stop_mode=clone:stop=${frames}[${raw}]`)
   } else {
     const index = src.kind === "image"
       ? g.input(imageInput(src, fps, seconds))
-      : g.input(seekInput(src.path, clip.in, span + 2 / fps, manyInputs, "video"))
+      : g.input(seekInput(src.videoPath ?? src.path, clip.in, span + 2 / fps, manyInputs, "video"))
     g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(clip.speed)},fps=${fps}[${raw}]`)
   }
   const fitted = fitInto(g, raw, effectiveFit(clip.fit, src, w, h), src, w, h, canvas, {
@@ -561,7 +563,7 @@ const overlayLayer = (
   const seconds = clipDuration(o)
   const index = src.kind === "image"
     ? g.input(imageInput(src, canvas.fps, seconds))
-    : g.input(seekInput(src.path, o.in, o.out - o.in + 2 / canvas.fps, manyInputs, "video"))
+    : g.input(seekInput(src.videoPath ?? src.path, o.in, o.out - o.in + 2 / canvas.fps, manyInputs, "video"))
   const box = layoutBox(o.layout, src, canvas.width, canvas.height)
   const raw = g.label("or")
   g.add(`[${index}:v]setpts=(PTS-STARTPTS)/${n(o.speed)},fps=${canvas.fps},trim=end=${n(seconds)}[${raw}]`)

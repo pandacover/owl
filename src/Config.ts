@@ -31,6 +31,8 @@ export interface OwlConfigShape {
   readonly cpus: number
   readonly analysisConcurrency: number
   readonly renderConcurrency: number
+  /** Memory one render may use, in MB. Long edits render in pieces that fit it. */
+  readonly renderMemoryMb: number
 }
 
 export class OwlConfig extends Context.Service<OwlConfig, OwlConfigShape>()("owl/Config") {
@@ -45,6 +47,9 @@ export class OwlConfig extends Context.Service<OwlConfig, OwlConfigShape>()("owl
         Config.withDefault(workersAiAvailable ? "workers-ai" as const : "none" as const)
       )
       const cpus = Math.max(1, Os.availableParallelism())
+      // The container's limit when it has one: the host's total memory is not ours to use.
+      const limit = process.constrainedMemory?.() || Os.totalmem()
+      const renderConcurrency = yield* Config.Int("OWL_RENDER_CONCURRENCY").pipe(Config.withDefault(1))
       return OwlConfig.of({
         port: yield* Config.Int("PORT").pipe(Config.withDefault(8080)),
         token: yield* Config.Redacted("OWL_TOKEN"),
@@ -67,7 +72,10 @@ export class OwlConfig extends Context.Service<OwlConfig, OwlConfigShape>()("owl
         publicUrl: yield* Config.option(Config.String("OWL_PUBLIC_URL")),
         cpus,
         analysisConcurrency: yield* Config.Int("OWL_ANALYSIS_CONCURRENCY").pipe(Config.withDefault(2)),
-        renderConcurrency: yield* Config.Int("OWL_RENDER_CONCURRENCY").pipe(Config.withDefault(1))
+        renderConcurrency,
+        renderMemoryMb: yield* Config.Int("OWL_RENDER_MEMORY_MB").pipe(
+          Config.withDefault(Math.round(Math.min(6000, Math.max(800, (limit / 1024 ** 2) * 0.4)) / Math.max(1, renderConcurrency)))
+        )
       })
     })
   )

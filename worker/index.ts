@@ -55,6 +55,8 @@ export class OwlContainer extends Container<Env> {
       OWL_STORAGE: "r2",
       OWL_TOKEN: env.OWL_TOKEN,
       OWL_CACHE_DIR: "/tmp/owl",
+      // standard-4 has 12 GiB; leave room for the server and analysis.
+      OWL_RENDER_MEMORY_MB: "4500",
       ...(env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY } : {}),
       ...(env.OWL_VISION_MODEL ? { OWL_VISION_MODEL: env.OWL_VISION_MODEL } : {})
     }
