@@ -42,7 +42,7 @@ export interface FfmpegShape {
  * never finishes. A stall this close to the end is that, so it is cut short sooner.
  */
 const NEAR_END_SECONDS = 1.5
-const NEAR_END_STALL_SECONDS = 20
+const NEAR_END_STALL_SECONDS = 8
 
 const ProbeJson = Schema.Struct({
   streams: Schema.Array(Schema.Struct({
@@ -256,7 +256,7 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
             // A stuck graph keeps the process alive without output; ending the scope kills it.
             const watchdog = Effect.gen(function*() {
               while (true) {
-                yield* Effect.sleep("5 seconds")
+                yield* Effect.sleep("2 seconds")
                 const nearEnd = options.duration !== undefined && Math.max(0, lastUs) / 1e6 >= options.duration - NEAR_END_SECONDS
                 const limit = nearEnd ? Math.min(stall, NEAR_END_STALL_SECONDS) : stall
                 if (Date.now() - movedAt > limit * 1000) {
