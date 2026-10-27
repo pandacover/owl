@@ -197,6 +197,8 @@ export const searchText = (query: string, hits: ReadonlyArray<SearchHit>, names:
 
 const mb = (bytes: number) => `${round1(bytes / 1024 / 1024)} MB`
 
+const notes = (job: RenderJob) => job.notes?.length ? `\nNotes:\n${job.notes.map((x) => `  ${x}`).join("\n")}` : ""
+
 export const renderLine = (job: RenderJob, url?: string): string => {
   const range = job.start !== undefined ? ` ${formatRange(job.start, job.end ?? 0)}` : ""
   const head = `${job.id} · ${job.quality}${range} of ${job.projectId} v${job.projectVersion} · ${job.status}`
@@ -204,12 +206,12 @@ export const renderLine = (job: RenderJob, url?: string): string => {
     case "queued":
       return `${head}`
     case "running":
-      return `${head} ${Math.round(job.progress * 100)}%`
+      return `${head} ${Math.round(job.progress * 100)}%${notes(job)}`
     case "failed":
-      return `${head}: ${job.error ?? "unknown error"}`
+      return `${head}: ${job.error ?? "unknown error"}${notes(job)}`
     case "done":
       return `${head} · ${formatDuration(job.duration ?? 0)}, ${job.width}x${job.height}, ${mb(job.bytes ?? 0)}, took ${
         round1(job.took ?? 0)
-      }s${url ? `\nLink (valid 7 days): ${url}` : ""}${job.notes?.length ? `\nNotes: ${job.notes.join("; ")}` : ""}`
+      }s${url ? `\nLink (valid 7 days): ${url}` : ""}${notes(job)}`
   }
 }
