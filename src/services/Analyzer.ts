@@ -579,11 +579,11 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           const a = analysis.value
           const shots = record.probe?.kind === "video" && a.detector !== DETECTOR
           // Music and other sounds: parts (version 3) matter for long ones, separate
-          // sounds (version 4) for short ones. Speech and silence gain nothing.
+          // sounds and strikes (version 5) for short ones. Speech and silence gain nothing.
           const version = a.audioVersion ?? 0
           const duration = record.probe?.duration ?? 0
           const audio = (a.audio?.kind === "music" || a.audio?.kind === "sound") &&
-            ((version < 3 && duration >= 20) || (version < 4 && duration <= HITS_MAX_DURATION))
+            ((version < 3 && duration >= 20) || (version < AUDIO_VERSION && duration <= HITS_MAX_DURATION))
           if (!shots && !audio) continue
           running.add(record.id)
           // One after the other, so neither save overwrites the other's result.

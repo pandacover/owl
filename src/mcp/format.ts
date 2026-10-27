@@ -115,9 +115,12 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
         ...shown.map((h, i) =>
           `  ${i + 1}. ${h.start.toFixed(3)}–${h.end.toFixed(3)}s (${Math.round((h.end - h.start) * 1000)}ms), loudest at ${h.peak.toFixed(3)}, ${
             round1(h.db)
-          } dB${h.transients > 1 ? `, ${h.transients} attacks` : ""}`
+          } dB${h.strikes ? `, ${h.strikes.length} strikes at ${h.strikes.map((x) => x.toFixed(3)).join(" ")}` : ""}`
         )
       )
+      if (shown.some((h) => h.strikes)) {
+        lines.push("  A sound with several strikes is a burst (clicks, knocks). One strike: in = a strike time, out = just before the next strike.")
+      }
       if (shown.length < a.hits.length) lines.push(`  ...${a.hits.length - shown.length} more (detail full lists all)`)
     }
     if (full && !effect) {

@@ -129,8 +129,10 @@ export interface AudioHit {
   /** Time of the loudest moment. */
   readonly peak: number
   readonly db: number
-  /** Sharp attacks inside the sound: a shutter is often 2 (open and close). */
+  /** Strikes inside the sound: sharp jumps to near its loudest level. */
   readonly transients: number
+  /** Start time of each strike, when there is more than one: one click of a burst runs from a strike to the next. */
+  readonly strikes?: ReadonlyArray<number> | undefined
 }
 
 export interface AudioSection {
