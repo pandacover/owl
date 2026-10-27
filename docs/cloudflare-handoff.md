@@ -14,7 +14,7 @@ Written 2026-10-27. Owl has only run on the Daytona test sandbox so far. The Clo
 
 The memory failures on Daytona came from the 4 GB limit. Big renders measured about 2.6 GB per piece there. On Cloudflare owl gives one render 4.5 GB (`OWL_RENDER_MEMORY_MB` in `worker/index.ts`), so pieces can be bigger and fewer.
 
-The render stalls are a different problem and will happen on Cloudflare too, because both use the same FFmpeg 7 from Debian trixie. FFmpeg sometimes stops exactly one second before the end of a piece, even with 2 GB free. Owl now tells FFmpeg to finish when that happens and keeps the piece if every frame is there. In a test on 2026-10-27, the 1:30 shutter edit (222 cuts) took 375 seconds instead of 571, with no pieces redone. The render notes say "finished cleanly" when this happens.
+The render stalls are a different problem and will happen on Cloudflare too, because both use the same FFmpeg 7 from Debian trixie. FFmpeg sometimes stops exactly one second before the end of a piece, even with 2 GB free. Owl now tells FFmpeg to finish when that happens and keeps the piece if every frame is there. In a test on 2026-10-27, the 1:30 shutter edit (222 cuts) took 263 seconds instead of 571, with no pieces redone. The render notes say "finished cleanly" when this happens.
 
 ## Steps
 
