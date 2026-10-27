@@ -13,6 +13,18 @@ export interface RunOptions {
   readonly stallSeconds?: number | undefined
   /** Called at the end with the process's peak memory and the lowest free memory seen, in MB (Linux only). */
   readonly onMemory?: ((peakMb: number, lowestFreeMb: number) => Effect.Effect<void>) | undefined
+  /**
+   * On a stall, ask ffmpeg to finish (SIGINT) before failing, so the frames it
+   * already has are written and the output is a complete file. The run still
+   * fails with STALLED; the caller checks the file.
+   */
+  readonly finishOnStall?: boolean | undefined
+}
+
+/** What a finished output file holds. */
+export interface OutputLengths {
+  readonly videoFrames: number
+  readonly audioSeconds: number
 }
 
 export interface FfmpegShape {
@@ -21,7 +33,16 @@ export interface FfmpegShape {
   readonly run: (args: ReadonlyArray<string>, options?: RunOptions) => Effect.Effect<void, FfmpegError>
   /** Runs ffmpeg and collects stdout, for raw PCM or metadata output. */
   readonly runCollect: (args: ReadonlyArray<string>) => Effect.Effect<Uint8Array, FfmpegError>
+  /** Counts the video frames and measures the audio of a rendered file, reading packets only. */
+  readonly lengths: (file: string) => Effect.Effect<OutputLengths, FfmpegError>
 }
+
+/**
+ * FFmpeg 7 sometimes stops exactly one second before the end of a piece and
+ * never finishes. A stall this close to the end is that, so it is cut short sooner.
+ */
+const NEAR_END_SECONDS = 1.5
+const NEAR_END_STALL_SECONDS = 8
 
 const ProbeJson = Schema.Struct({
   streams: Schema.Array(Schema.Struct({
@@ -229,20 +250,29 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
             Effect.raceFirst(sampler)
           )
           const stall = options.stallSeconds
+          let stalled: string | undefined
           if (stall === undefined) yield* output
           else {
             // A stuck graph keeps the process alive without output; ending the scope kills it.
             const watchdog = Effect.gen(function*() {
               while (true) {
-                yield* Effect.sleep("10 seconds")
-                if (Date.now() - movedAt > stall * 1000) {
+                yield* Effect.sleep("2 seconds")
+                const nearEnd = options.duration !== undefined && Math.max(0, lastUs) / 1e6 >= options.duration - NEAR_END_SECONDS
+                const limit = nearEnd ? Math.min(stall, NEAR_END_STALL_SECONDS) : stall
+                if (Date.now() - movedAt > limit * 1000) {
                   const at = lastUs < 0 ? "before the first frame" : `at ${(lastUs / 1e6).toFixed(2)}s${options.duration ? ` of ${options.duration.toFixed(2)}s` : ""}`
                   const memory = peakMb > 0 ? `, peak ${Math.round(peakMb)} MB, lowest free ${Math.round(lowestFreeMb)} MB` : ""
-                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds (${at}${memory}) and was stopped`, stderr })
+                  stalled = `${STALLED} for ${limit} seconds (${at}${memory}) and was stopped`
+                  if (options.finishOnStall) {
+                    yield* handle.kill({ killSignal: "SIGINT", forceKillAfter: "10 seconds" }).pipe(Effect.ignore)
+                  }
+                  return yield* new FfmpegError({ message: stalled, stderr })
                 }
               }
             })
+            // When ffmpeg exits on SIGINT, its output ends before the watchdog returns.
             yield* Effect.raceFirst(output, watchdog)
+            if (stalled) return yield* new FfmpegError({ message: stalled, stderr })
           }
           // No exit code means a signal ended it: on a small machine, the kernel's out-of-memory killer.
           const exitCode = yield* handle.exitCode.pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)))
@@ -283,7 +313,32 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
           Effect.catchTag("PlatformError", (error) => Effect.fail(new FfmpegError({ message: error.message, stderr: "" })))
         )
 
-      return Ffmpeg.of({ probe, run, runCollect })
+      const lengths = (file: string) =>
+        spawner.string(ChildProcess.make("ffprobe", [
+          "-v",
+          "error",
+          "-count_packets",
+          "-show_entries",
+          "stream=codec_type,nb_read_packets:stream_tags=DURATION",
+          "-print_format",
+          "json",
+          file
+        ])).pipe(
+          Effect.flatMap((text) =>
+            Effect.try(() => {
+              type Entry = { codec_type?: string; nb_read_packets?: string; tags?: { DURATION?: string } }
+              const streams = (JSON.parse(text) as { streams?: Array<Entry> }).streams ?? []
+              const video = streams.find((s) => s.codec_type === "video")
+              const audio = streams.find((s) => s.codec_type === "audio")
+              // Matroska keeps each stream's length as a tag, written when the file is closed.
+              const [h = 0, m = 0, sec = 0] = (audio?.tags?.DURATION ?? "0:0:0").split(":").map(Number)
+              return { videoFrames: Number(video?.nb_read_packets ?? 0), audioSeconds: h * 3600 + m * 60 + sec } satisfies OutputLengths
+            })
+          ),
+          Effect.mapError((cause) => new FfmpegError({ message: `Could not read ${file.split("/").pop()}`, stderr: String(cause).slice(-STDERR_TAIL) }))
+        )
+
+      return Ffmpeg.of({ probe, run, runCollect, lengths })
     })
   )
 }
