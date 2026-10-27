@@ -210,9 +210,16 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               const status = await readFile(`/proc/${handle.pid}/status`, "utf8")
               const hwm = /VmHWM:\s+(\d+)/.exec(status)
               if (hwm) peakMb = Math.max(peakMb, Number(hwm[1]) / 1024)
-              const meminfo = await readFile("/proc/meminfo", "utf8")
-              const free = /MemAvailable:\s+(\d+)/.exec(meminfo)
-              if (free) lowestFreeMb = Math.min(lowestFreeMb, Number(free[1]) / 1024)
+              // The container's own limit when it has one; /proc/meminfo shows the host.
+              const limit = await readFile("/sys/fs/cgroup/memory.max", "utf8").catch(() => "max")
+              if (limit.trim() !== "max") {
+                const current = await readFile("/sys/fs/cgroup/memory.current", "utf8")
+                lowestFreeMb = Math.min(lowestFreeMb, (Number(limit) - Number(current)) / 1024 ** 2)
+              } else {
+                const meminfo = await readFile("/proc/meminfo", "utf8")
+                const free = /MemAvailable:\s+(\d+)/.exec(meminfo)
+                if (free) lowestFreeMb = Math.min(lowestFreeMb, Number(free[1]) / 1024)
+              }
             } catch {
               // Not Linux, or the process has ended.
             }
