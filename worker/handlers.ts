@@ -14,7 +14,7 @@ export interface HandlerEnv {
 /** Sends a request to the owl container. */
 export type ContainerFetch = (request: Request) => Promise<Response>
 
-const UPLOAD_PART_SIZE = 16 * 1024 * 1024
+const UPLOAD_PART_SIZE = 8 * 1024 * 1024
 
 export const text = (body: string, status = 200) => new Response(body, { status })
 const json = (body: unknown, status = 200) =>

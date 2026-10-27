@@ -60,7 +60,7 @@ beforeAll(async () => {
   })
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await fetch(`${base}/health`)).ok) break
+      if ((await fetch(`${base}/health`, { signal: AbortSignal.timeout(2000) })).ok) break
     } catch {
       await new Promise((r) => setTimeout(r, 100))
     }
