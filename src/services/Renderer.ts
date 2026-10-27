@@ -4,7 +4,7 @@ import { OwlConfig } from "../Config.ts"
 import { OwlError, type StorageError } from "../domain/Errors.ts"
 import { newId, randomCode } from "../domain/Ids.ts"
 import type { Word } from "../domain/Media.ts"
-import { round3 } from "../domain/Time.ts"
+import { round1, round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
 import { buildRender, type Canvas, ENCODER_THREADS, joinPieces, type SourceInfo } from "../render/graph.ts"
@@ -250,6 +250,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           readonly piece?: { readonly assPath: string | undefined; readonly offset: number; readonly last: boolean }
           readonly onProgress?: (p: number) => Effect.Effect<void>
           readonly stallSeconds?: number
+          readonly onMemory?: (peakMb: number, lowestFreeMb: number) => Effect.Effect<void>
           /** Sources already looked up for the whole edit. */
           readonly sources?: ReadonlyMap<string, Source>
         }
@@ -280,6 +281,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           yield* ffmpeg.run(args, {
             duration,
             stallSeconds: options.stallSeconds ?? STALL_SECONDS,
+            onMemory: options.onMemory,
             ...(options.onProgress ? { onProgress: options.onProgress } : {})
           })
           return duration
@@ -331,6 +333,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               yield* fs.makeDirectory(dir).pipe(Effect.orDie)
               const file = `${options.workDir}/piece${i}.mkv`
               const done = from / total
+              const began = Date.now()
               const result = yield* renderFile(sliceTimeline(timeline, from, to), {
                 quality: options.quality,
                 canvas: options.canvas,
@@ -339,6 +342,8 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 piece: { assPath, offset: from, last },
                 sources: options.sources,
                 stallSeconds: PIECE_STALL_SECONDS,
+                onMemory: (peak, free) =>
+                  options.note(`piece ${round3(from)}s to ${round3(to)}s: ${round1((Date.now() - began) / 1000)}s, ffmpeg peak ${peak} MB, lowest free ${free} MB`),
                 // Most of the time goes to the pieces; the join is a copy.
                 onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
               }).pipe(Effect.result)
@@ -393,7 +398,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 workDir,
                 onProgress: progress,
                 sources: sourceMap,
-                note: (text) => setJob({ ...jobs.get(job.id)!, notes: [...(jobs.get(job.id)!.notes ?? []), text].slice(-10) })
+                note: (text) => setJob({ ...jobs.get(job.id)!, notes: [...(jobs.get(job.id)!.notes ?? []), text].slice(-30) })
               })
             const stat = yield* fs.stat(output)
             yield* storage.commitFile(key, "video/mp4")

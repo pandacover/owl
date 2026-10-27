@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { Probe } from "../domain/Media.ts"
@@ -10,6 +11,8 @@ export interface RunOptions {
   readonly cwd?: string | undefined
   /** Stop ffmpeg when its output clock has not moved for this long. */
   readonly stallSeconds?: number | undefined
+  /** Called at the end with the process's peak memory and the lowest free memory seen, in MB (Linux only). */
+  readonly onMemory?: ((peakMb: number, lowestFreeMb: number) => Effect.Effect<void>) | undefined
 }
 
 export interface FfmpegShape {
@@ -173,7 +176,24 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               return options.onProgress(fraction)
             })
           )
-          const output = Effect.all([readStderr, readProgress], { concurrency: 2, discard: true })
+          let peakMb = 0
+          let lowestFreeMb = Infinity
+          const sample = Effect.promise(async () => {
+            try {
+              const status = await readFile(`/proc/${handle.pid}/status`, "utf8")
+              const hwm = /VmHWM:\s+(\d+)/.exec(status)
+              if (hwm) peakMb = Math.max(peakMb, Number(hwm[1]) / 1024)
+              const meminfo = await readFile("/proc/meminfo", "utf8")
+              const free = /MemAvailable:\s+(\d+)/.exec(meminfo)
+              if (free) lowestFreeMb = Math.min(lowestFreeMb, Number(free[1]) / 1024)
+            } catch {
+              // Not Linux, or the process has ended.
+            }
+          })
+          const sampler = options.onMemory ? Effect.forever(Effect.andThen(sample, Effect.sleep("1 second"))) : Effect.never
+          const output = Effect.all([readStderr, readProgress], { concurrency: 2, discard: true }).pipe(
+            Effect.raceFirst(sampler)
+          )
           const stall = options.stallSeconds
           if (stall === undefined) yield* output
           else {
@@ -183,7 +203,8 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
                 yield* Effect.sleep("10 seconds")
                 if (Date.now() - movedAt > stall * 1000) {
                   const at = lastUs < 0 ? "before the first frame" : `at ${(lastUs / 1e6).toFixed(2)}s${options.duration ? ` of ${options.duration.toFixed(2)}s` : ""}`
-                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds (${at}) and was stopped`, stderr })
+                  const memory = peakMb > 0 ? `, peak ${Math.round(peakMb)} MB, lowest free ${Math.round(lowestFreeMb)} MB` : ""
+                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds (${at}${memory}) and was stopped`, stderr })
                 }
               }
             })
@@ -191,6 +212,7 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
           }
           // No exit code means a signal ended it: on a small machine, the kernel's out-of-memory killer.
           const exitCode = yield* handle.exitCode.pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)))
+          if (options.onMemory && peakMb > 0) yield* options.onMemory(Math.round(peakMb), Math.round(lowestFreeMb))
           if (exitCode === undefined) return yield* new FfmpegError({ message: KILLED, stderr })
           if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
             return yield* new FfmpegError({ message: `ffmpeg exited with code ${exitCode}`, stderr })
