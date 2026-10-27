@@ -3,7 +3,7 @@ import { findSections } from "../../src/analysis/audio.ts"
 
 // Three movements: 60s quiet and sparse, a 3s pause, 40s medium, a 3s pause, 60s loud and busy.
 const track = () => {
-  const parts: Array<[number, number, number]> = [[60, -40, 0.3], [3, -90, 0], [40, -28, 0.8], [3, -90, 0], [60, -12, 2]]
+  const parts: Array<[number, number, number]> = [[30, -40, 0.3], [4, -50, 0.1], [26, -40, 0.3], [3, -90, 0], [40, -28, 0.8], [3, -90, 0], [60, -12, 2]]
   const loudness: Array<number> = []
   const onsets: Array<number> = []
   for (const [seconds, db, busy] of parts) {
@@ -16,7 +16,7 @@ const track = () => {
 describe("music sections", () => {
   it("splits at the pauses between movements and ranks their energy", () => {
     const { loudness, envelope } = track()
-    const { sections, rises } = findSections(loudness, 0.1, envelope, [[60, 63], [103, 106]], 166)
+    const { sections, rises } = findSections(loudness, 0.1, envelope, 166)
     expect(sections.map((s) => [s.start, s.end])).toEqual([[0, 60], [63, 103], [106, 166]])
     const [a, b, c] = sections.map((s) => s.energy)
     expect(a!).toBeLessThan(b!)
@@ -27,6 +27,6 @@ describe("music sections", () => {
 
   it("leaves short audio alone", () => {
     const { loudness, envelope } = track()
-    expect(findSections(loudness.slice(0, 150), 0.1, envelope, [], 15).sections).toEqual([])
+    expect(findSections(loudness.slice(0, 150), 0.1, envelope, 15).sections).toEqual([])
   })
 })
