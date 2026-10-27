@@ -90,3 +90,20 @@ it("keeps unrelated sounds apart", () => {
     expect(Math.abs(h.end - expected[i]![1]!)).toBeLessThan(0.009)
   })
 })
+
+it("finds each click of a burst with no silence between clicks", () => {
+  const rate = 22050
+  const samples = new Float32Array(rate * 3)
+  // Two bursts of 5 clicks, 0.19s apart, each click decaying to about -30 dB before the next.
+  for (const burst of [0.1, 1.6]) {
+    for (let c = 0; c < 5; c++) {
+      const at = Math.round((burst + c * 0.19) * rate)
+      for (let i = 0; i < 0.19 * rate; i++) samples[at + i] = samples[at + i]! + Math.sin(i * 1.1) * 0.5 * Math.max(0.03, Math.exp(-i / (rate * 0.03)))
+    }
+  }
+  const { hits } = findHits(samples, rate)
+  expect(hits).toHaveLength(2)
+  const strikes = hits[0]!.strikes!
+  expect(strikes).toHaveLength(5)
+  strikes.forEach((t, c) => expect(Math.abs(t - (0.1 + c * 0.19))).toBeLessThan(0.01))
+})
