@@ -111,6 +111,8 @@ const settings: Record<string, string | undefined> = {
   OWL_DATA_DIR: `${home}/owl-data`,
   OWL_CACHE_DIR: `${home}/owl-cache`,
   OWL_CACHE_MAX_GB: "2",
+  // The sandbox memory, not the host's: 40% of it for one render.
+  OWL_RENDER_MEMORY_MB: String(Math.round(Number(env("DAYTONA_MEMORY") ?? 4) * 1024 * 0.4)),
   OWL_PUBLIC_URL: origin,
   ANTHROPIC_API_KEY: env("ANTHROPIC_API_KEY"),
   OWL_VISION_MODEL: env("OWL_VISION_MODEL"),
