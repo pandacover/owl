@@ -5,8 +5,9 @@
  *   POST ./start     {name, size, type}              -> {id, key, uploadId, partSize}
  *   PUT  ./part?...  raw bytes of one part           -> {etag}
  *   POST ./complete  {id, key, uploadId, name, parts} -> {id, name}
- * Files are sent in parts, several at a time, so large phone videos upload
- * reliably and failed parts are retried on their own.
+ * Files are sent in parts from one shared pool, so several files and parts go
+ * out together and failed parts are retried on their own. Progress is kept in
+ * localStorage, so after a reload picking the same file resumes the upload.
  */
 export const uploadPage = `<!doctype html>
 <html lang="en">
@@ -40,14 +41,29 @@ export const uploadPage = `<!doctype html>
 <body>
 <main>
   <h1>Upload to owl</h1>
-  <p>Add videos, music or images. Keep this page open until every file says done, then go back to Claude.</p>
+  <p>Add videos, music or images. Keep this page open with the screen on until every file says done, then go back to Claude. If the page reloads, pick the same file again and it continues where it stopped.</p>
   <label class="pick">Choose files<span>Video, audio or images, any size</span><input id="files" type="file" multiple></label>
   <ul id="list"></ul>
 </main>
 <script>
 const base = location.pathname.replace(/\\/$/, "");
 const list = document.getElementById("list");
-const PARALLEL = 3;
+const PARALLEL = 4;
+const STORE = "owl-uploads:" + base;
+const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE) || "{}"); } catch { return {}; } })();
+const persist = () => { try { localStorage.setItem(STORE, JSON.stringify(saved)); } catch {} };
+const fileKey = (f) => f.name + "|" + f.size + "|" + f.lastModified;
+const mb = (n) => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB";
+let active = 0;
+let wakeLock = null;
+async function awake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen");
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && active > 0) { wakeLock = null; awake(true); } });
+window.addEventListener("beforeunload", (e) => { if (active > 0) { e.preventDefault(); e.returnValue = ""; } });
 
 async function call(path, init, tries = 4) {
   for (let i = 0; ; i++) {
@@ -61,52 +77,128 @@ async function call(path, init, tries = 4) {
     }
   }
 }
-
-function row(file) {
+// XHR reports bytes as they leave, so progress moves smoothly instead of jumping per part.
+function sendPart(url, blob, onBytes) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", base + url);
+    let last = 0;
+    xhr.upload.onprogress = (e) => { onBytes(e.loaded - last); last = e.loaded; };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { onBytes(blob.size - last); resolve(JSON.parse(xhr.responseText)); }
+      else { onBytes(-last); reject(new Error(xhr.responseText || ("HTTP " + xhr.status))); }
+    };
+    xhr.onerror = () => { onBytes(-last); reject(new Error("Network error")); };
+    xhr.send(blob);
+  });
+}
+async function sendPartRetry(url, blob, onBytes) {
+  for (let i = 0; ; i++) {
+    try { return await sendPart(url, blob, onBytes); }
+    catch (e) { if (i >= 4) throw e; await new Promise((r) => setTimeout(r, 1000 * 2 ** i)); }
+  }
+}
+function row(name) {
   const li = document.createElement("li");
   li.innerHTML = '<div class="row"><span class="name"></span><span class="state">waiting</span></div><div class="bar"><i></i></div><div class="id"></div>';
-  li.querySelector(".name").textContent = file.name;
-  list.appendChild(li);
+  li.querySelector(".name").textContent = name;
+  list.prepend(li);
   return {
     state: (s) => (li.querySelector(".state").textContent = s),
     progress: (p) => (li.querySelector(".bar i").style.width = Math.round(p * 100) + "%"),
-    done: (id) => { li.className = "done"; li.querySelector(".id").textContent = "media id " + id; },
-    failed: (msg) => { li.className = "failed"; li.querySelector(".id").textContent = msg; }
+    note: (t) => (li.querySelector(".id").textContent = t),
+    done: (id) => { li.className = "done"; li.querySelector(".bar i").style.width = "100%"; li.querySelector(".id").textContent = "media id " + id; },
+    failed: (msg) => { li.className = "failed"; li.querySelector(".id").textContent = msg; },
+    reset: () => { li.className = ""; }
   };
 }
+const rows = {};
+for (const [k, u] of Object.entries(saved)) {
+  const ui = rows[k] = row(u.name);
+  if (u.mediaId) { ui.state("done"); ui.done(u.mediaId); }
+  else {
+    const have = Object.keys(u.parts || {}).length;
+    ui.state("paused");
+    ui.progress(have / Math.max(1, u.count));
+    ui.note("Pick this file again to continue (" + have + " of " + u.count + " parts sent).");
+  }
+}
+
+// One shared pool of part uploads, so several files and parts go out together.
+const queue = [];
+let workers = 0;
+function pump() {
+  while (workers < PARALLEL && queue.length > 0) {
+    const job = queue.shift();
+    workers++;
+    job().finally(() => { workers--; pump(); });
+  }
+}
+const enqueue = (fn) => new Promise((resolve, reject) => { queue.push(() => fn().then(resolve, reject)); pump(); });
 
 async function upload(file, ui) {
-  ui.state("starting");
-  const start = await call("/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, size: file.size, type: file.type }) });
-  const count = Math.max(1, Math.ceil(file.size / start.partSize));
-  const parts = new Array(count);
-  let sent = 0, next = 0;
-  async function worker() {
-    while (next < count) {
-      const n = next++;
-      const blob = file.slice(n * start.partSize, Math.min(file.size, (n + 1) * start.partSize));
-      const q = "?key=" + encodeURIComponent(start.key) + "&uploadId=" + encodeURIComponent(start.uploadId) + "&part=" + (n + 1);
-      const res = await call("/part" + q, { method: "PUT", body: blob });
-      parts[n] = { partNumber: n + 1, etag: res.etag };
-      sent += blob.size;
-      ui.progress(sent / file.size);
-      ui.state(Math.round((sent / file.size) * 100) + "%");
-    }
+  const k = fileKey(file);
+  let u = saved[k];
+  if (u && u.mediaId) { ui.state("done"); ui.done(u.mediaId); return; }
+  if (!u) {
+    ui.state("starting");
+    const start = await call("/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, size: file.size, type: file.type }) });
+    u = saved[k] = { name: file.name, id: start.id, key: start.key, uploadId: start.uploadId, partSize: start.partSize, count: Math.max(1, Math.ceil(file.size / start.partSize)), parts: {} };
+    persist();
   }
-  await Promise.all(Array.from({ length: Math.min(PARALLEL, count) }, worker));
+  let sent = 0;
+  for (const n of Object.keys(u.parts)) sent += Math.min(u.partSize, file.size - (Number(n) - 1) * u.partSize);
+  const t0 = performance.now();
+  const sent0 = sent;
+  const show = () => {
+    ui.progress(sent / file.size);
+    const secs = (performance.now() - t0) / 1000;
+    const rate = secs > 1 ? (sent - sent0) / secs : 0;
+    const left = rate > 0 ? Math.round((file.size - sent) / rate) : 0;
+    ui.state(Math.floor((sent / file.size) * 100) + "%");
+    ui.note(mb(sent) + " of " + mb(file.size) + (rate > 0 ? " · " + mb(rate) + "/s" + (left > 0 ? " · about " + (left >= 90 ? Math.round(left / 60) + " min" : left + " s") + " left" : "") : ""));
+  };
+  show();
+  const todo = [];
+  for (let n = 1; n <= u.count; n++) if (!u.parts[n]) todo.push(n);
+  await Promise.all(todo.map((n) => enqueue(async () => {
+    const blob = file.slice((n - 1) * u.partSize, Math.min(file.size, n * u.partSize));
+    const q = "?key=" + encodeURIComponent(u.key) + "&uploadId=" + encodeURIComponent(u.uploadId) + "&part=" + n;
+    const res = await sendPartRetry("/part" + q, blob, (d) => { sent += d; show(); });
+    u.parts[n] = res.etag;
+    persist();
+  })));
   ui.state("finishing");
-  const done = await call("/complete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: start.id, key: start.key, uploadId: start.uploadId, name: file.name, parts }) });
+  const parts = Object.keys(u.parts).map(Number).sort((a, b) => a - b).map((n) => ({ partNumber: n, etag: u.parts[n] }));
+  const done = await call("/complete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: u.id, key: u.key, uploadId: u.uploadId, name: file.name, parts }) });
+  u.mediaId = done.id;
+  persist();
   ui.state("done");
   ui.done(done.id);
 }
-
-document.getElementById("files").addEventListener("change", async (event) => {
+async function run(file) {
+  const k = fileKey(file);
+  const ui = rows[k] || (rows[k] = row(file.name));
+  ui.reset();
+  active++;
+  awake(true);
+  try { await upload(file, ui); }
+  catch (e) {
+    const msg = String(e.message || e);
+    // The server forgot this upload (it restarted): start the file over.
+    if (/Unknown upload|NoSuchUpload|does not exist/i.test(msg) && saved[k]) {
+      delete saved[k]; persist();
+      try { await upload(file, ui); } catch (e2) { ui.state("failed"); ui.failed(String(e2.message || e2)); }
+    } else { ui.state("failed"); ui.failed(msg + " Pick the file again to retry."); }
+  } finally {
+    active--;
+    if (active === 0) awake(false);
+  }
+}
+document.getElementById("files").addEventListener("change", (event) => {
   const files = [...event.target.files];
   event.target.value = "";
-  for (const file of files) {
-    const ui = row(file);
-    try { await upload(file, ui); } catch (e) { ui.state("failed"); ui.failed(String(e.message || e)); }
-  }
+  files.forEach(run);
 });
 </script>
 </body>

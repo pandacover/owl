@@ -31,7 +31,7 @@ export const extensionOf = (name: string) => {
   return ext ?? "bin"
 }
 
-const PART_SIZE = 16 * 1024 * 1024
+const PART_SIZE = 8 * 1024 * 1024
 
 const json = (body: unknown, status = 200) =>
   HttpServerResponse.text(JSON.stringify(body), { status, contentType: "application/json" })
