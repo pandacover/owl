@@ -89,6 +89,9 @@ export const toProbe = (raw: typeof ProbeJson.Type): Probe => {
 
 const STDERR_TAIL = 4000
 
+/** Start of the error message when a run is stopped for making no progress. */
+export const STALLED = "ffmpeg made no progress"
+
 const KILLED = "ffmpeg was stopped by the system before it finished, most likely because the server ran out of memory"
 
 /** The lines of FFmpeg's error output that explain a failure, without the shutdown noise that follows the cause. */
@@ -179,7 +182,7 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               while (true) {
                 yield* Effect.sleep("10 seconds")
                 if (Date.now() - movedAt > stall * 1000) {
-                  return yield* new FfmpegError({ message: `ffmpeg made no progress for ${Math.round(stall / 60)} minutes and was stopped`, stderr })
+                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds and was stopped`, stderr })
                 }
               }
             })

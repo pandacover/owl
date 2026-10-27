@@ -742,7 +742,8 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
   const afinal = g.label("aout")
   g.add(
     input.piece
-      ? `[${aout}]${AUDIO_FORMAT},apad,atrim=end=${n(totalFrames / fps)}[${afinal}]`
+      // Clean, gapless timestamps: the pieces are joined end to end.
+      ? `[${aout}]${AUDIO_FORMAT},apad,atrim=end=${n(totalFrames / fps)},asetpts=N/SR/TB[${afinal}]`
       : `[${aout}]${finishAudio(input.quality, totalFrames / fps)}[${afinal}]`
   )
 
@@ -765,8 +766,8 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
         String(fps),
         "-c:a",
         "pcm_f32le",
-        "-t",
-        n(totalFrames / fps),
+        // No -t: the graph already ends both streams on the last frame, and FFmpeg 7's
+        // queue that lines up streams for -t can stall on a graph with many inputs.
         input.output
       ],
       duration: totalFrames / fps

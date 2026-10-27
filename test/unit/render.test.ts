@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { emptyTimeline, type Timeline } from "../../src/domain/Timeline.ts"
 import { buildAss, captionLines, timelineWords } from "../../src/render/ass.ts"
 import { buildRender, duckExpression, joinPieces } from "../../src/render/graph.ts"
-import { inputCostMb, PIECE_BASE_MB, pieceBounds, sliceTimeline, stillRange } from "../../src/render/slice.ts"
+import { inputCostMb, PIECE_BASE_MB, pieceBounds, splitPoint, sliceTimeline, stillRange } from "../../src/render/slice.ts"
 import { mainDuration } from "../../src/domain/Timeline.ts"
 import { detectMoments } from "../../src/analysis/shots.ts"
 
@@ -292,6 +292,14 @@ describe("long edits in pieces", () => {
     // The overlay that runs past the piece does not fade out at the edge.
     expect(piece.overlays[0]).toMatchObject({ fadeOut: 0.5 })
     expect(sliceTimeline(t, 10, 13).overlays[0]).toMatchObject({ fadeOut: 0 })
+  })
+
+  it("splits a stuck piece at a hard cut near its middle", () => {
+    const t = many(40)
+    const at = splitPoint(t, 0, 20.4, 30)!
+    expect(Math.abs(at - 10.2)).toBeLessThan(0.6)
+    expect(Math.abs(at * 30 - Math.round(at * 30))).toBeLessThan(1e-6)
+    expect(splitPoint(t, 0, 0.5, 30)).toBeUndefined()
   })
 
   it("joins pieces by copying video and finishing audio once", () => {
