@@ -1,5 +1,5 @@
 import { round3 } from "../domain/Time.ts"
-import { clipDuration, type MainClip, placeMain, type Timeline, type ZoomKey } from "../domain/Timeline.ts"
+import { BLANK, clipDuration, type MainClip, placeMain, type Timeline, timelineDuration, type ZoomKey } from "../domain/Timeline.ts"
 
 /** Zoom keys are relative to the clip start, so a clip that loses its head moves its keys earlier. */
 const shiftZoom = (zoom: ReadonlyArray<ZoomKey> | undefined, by: number): ReadonlyArray<ZoomKey> | undefined =>
@@ -67,6 +67,8 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
       in: round3(inT),
       out: round3(out),
       fadeIn: skip > 0 ? 0 : o.fadeIn,
+      // Cut at the slice end, it carries on in the next slice: no fade out here.
+      fadeOut: out < o.out - 1e-6 ? 0 : o.fadeOut,
       zoom: shiftZoom(o.zoom, skip)
     }]
   })
@@ -106,4 +108,44 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
   )
 
   return { ...timeline, main, overlays, audio, texts, blurs }
+}
+
+/** Video inputs one render piece may open. Each open decoder holds full-size frames. */
+export const PIECE_INPUTS = 24
+
+/**
+ * Where to split a long edit into pieces that render one at a time, as
+ * timeline times from 0 to the end. One piece when the edit is small. Splits
+ * sit on hard cuts between main clips, on whole frames, and avoid overlays
+ * that span the cut when they can.
+ */
+export const pieceBounds = (timeline: Timeline, fps: number): ReadonlyArray<number> => {
+  const total = timelineDuration(timeline)
+  const placed = placeMain(timeline.main)
+  const inputs = placed.filter((p) => p.clip.mediaId !== BLANK).length + timeline.overlays.length
+  if (inputs <= PIECE_INPUTS * 1.5) return [0, total]
+  const overlaysIn = (from: number, to: number) => timeline.overlays.filter((o) => o.start >= from && o.start < to).length
+  const within = (t: number, from: number, to: number) => from < t - 1e-6 && to > t + 1e-6
+  // A fade cut in two would restart at full strength in the next piece.
+  const crossed = (t: number) =>
+    timeline.overlays.some((o) => within(t, o.start, o.start + clipDuration(o))) ||
+    timeline.audio.some((a) => {
+      const end = a.start + (a.loop ? (a.duration ?? total - a.start) : a.out - a.in)
+      return within(t, a.start, a.start + a.fadeIn) || within(t, end - a.fadeOut, end)
+    })
+  const bounds = [0]
+  let count = 0
+  placed.forEach((p, i) => {
+    const next = placed[i + 1]
+    count += (p.clip.mediaId === BLANK ? 0 : 1) + overlaysIn(p.start, next ? next.start : total + 1)
+    if (!next || next.clip.transition) return
+    const at = Math.round(next.start * fps) / fps
+    if (at <= bounds[bounds.length - 1]! + 1 / fps || at >= total - 1 / fps) return
+    if (count >= PIECE_INPUTS * 2 || (count >= PIECE_INPUTS && !crossed(next.start))) {
+      bounds.push(at)
+      count = 0
+    }
+  })
+  bounds.push(total)
+  return bounds
 }

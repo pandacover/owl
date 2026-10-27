@@ -190,7 +190,7 @@ export interface OutputSettings {
   readonly look?: Look | undefined
 }
 
-export type Look = "cinematic" | "mono"
+export type Look = "cinematic" | "warm" | "clean" | "mono"
 
 export interface Timeline {
   readonly output: OutputSettings

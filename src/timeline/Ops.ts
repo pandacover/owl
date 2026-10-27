@@ -299,8 +299,8 @@ export const SetOutput = d(
     background: Schema.optionalKey(d(Color, "Background color, seen around contain and card media.")),
     gradient: Schema.optionalKey(d(Schema.NullOr(Color), "Second color: the background becomes a diagonal gradient from background to this. null for a flat color.")),
     look: Schema.optionalKey(d(
-      Schema.NullOr(Schema.Literals(["cinematic", "mono"])),
-      "Color grade over the whole picture (text stays clean). cinematic: film contrast, cool shadows, warm highlights, vignette and fine grain. mono: rich black and white. null for none."
+      Schema.NullOr(Schema.Literals(["cinematic", "warm", "clean", "mono"])),
+      "Color grade over the whole picture (text stays clean). cinematic: film contrast, cool shadows, warm highlights, vignette and fine grain; best on dark footage, it tints white and cream app screens. warm: gentle warmth, soft vignette and grain; keeps light UIs true. clean: a little contrast and color, soft vignette, no tint. mono: rich black and white. null for none."
     ))
   }),
   "Set the output frame size, frame rate or background."

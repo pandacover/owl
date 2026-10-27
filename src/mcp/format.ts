@@ -1,3 +1,4 @@
+import { isSoundEffect } from "../analysis/audio.ts"
 import type { Analysis, MediaRecord, Shot, StageName } from "../domain/Media.ts"
 import { formatDuration, formatRange, formatTime, round1 } from "../domain/Time.ts"
 import type { SearchHit } from "../services/Search.ts"
@@ -81,8 +82,9 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
 
   const a = analysis.audio
   if (a) {
-    const parts = [`Audio: ${a.kind}`, `mean ${round1(a.meanDb)} dB, peak ${round1(a.peakDb)} dB`]
-    if (a.tempo) {
+    const effect = p?.kind === "audio" && isSoundEffect(a, p.duration)
+    const parts = [`Audio: ${effect ? "sound effect" : a.kind}`, `mean ${round1(a.meanDb)} dB, peak ${round1(a.peakDb)} dB`]
+    if (a.tempo && !effect) {
       parts.push(
         `${round1(a.tempo)} BPM (confidence ${a.tempoConfidence.toFixed(2)}), ${a.beats.length} beats, first downbeat ${
           formatTime(a.downbeats[0] ?? a.beats[0] ?? 0)
@@ -104,7 +106,21 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
         lines.push(`Rises (energy jumps up; land a reveal or cut into a build here): ${a.rises.map(formatTime).join(", ")}`)
       }
     }
-    if (full) {
+    if (a.hits && a.hits.length > 0 && (effect || full)) {
+      const shown = full ? a.hits : a.hits.slice(0, 12)
+      lines.push(
+        a.repeatEvery !== undefined
+          ? `One sound repeated every ${a.repeatEvery.toFixed(3)}s. Each repeat (use one with add_audio in = its start, out = its end):`
+          : `Separate sounds (silence around each; to use one sound, add_audio with in = its start and out = its end):`,
+        ...shown.map((h, i) =>
+          `  ${i + 1}. ${h.start.toFixed(3)}–${h.end.toFixed(3)}s (${Math.round((h.end - h.start) * 1000)}ms), loudest at ${h.peak.toFixed(3)}, ${
+            round1(h.db)
+          } dB${h.transients > 1 ? `, ${h.transients} attacks` : ""}`
+        )
+      )
+      if (shown.length < a.hits.length) lines.push(`  ...${a.hits.length - shown.length} more (detail full lists all)`)
+    }
+    if (full && !effect) {
       if (a.downbeats.length > 0) lines.push(`Downbeats (s): ${a.downbeats.map((b) => b.toFixed(2)).join(" ")}`)
       if (a.beats.length > 0) lines.push(`Beats (s): ${a.beats.map((b) => b.toFixed(2)).join(" ")}`)
       if (a.accents.length > 0) lines.push(`Accents (s): ${[...a.accents].sort((x, y) => x - y).map((b) => b.toFixed(2)).join(" ")}`)

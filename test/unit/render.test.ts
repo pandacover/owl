@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { emptyTimeline, type Timeline } from "../../src/domain/Timeline.ts"
 import { buildAss, captionLines, timelineWords } from "../../src/render/ass.ts"
-import { buildRender, duckExpression } from "../../src/render/graph.ts"
-import { sliceTimeline, stillRange } from "../../src/render/slice.ts"
+import { buildRender, duckExpression, joinPieces } from "../../src/render/graph.ts"
+import { PIECE_INPUTS, pieceBounds, sliceTimeline, stillRange } from "../../src/render/slice.ts"
 import { mainDuration } from "../../src/domain/Timeline.ts"
 import { detectMoments } from "../../src/analysis/shots.ts"
 
@@ -224,5 +224,71 @@ describe("moments", () => {
   it("keeps camera footage whole", () => {
     const frames = Array.from({ length: 300 }, (_, i) => ({ t: i / 30, mafd: 3, score: 0 }))
     expect(detectMoments(frames, 0, 10)).toEqual([])
+  })
+})
+
+describe("long edits in pieces", () => {
+  const many = (count: number): Timeline => ({
+    ...emptyTimeline,
+    main: Array.from({ length: count }, (_, i) =>
+      clip(`c${i}`, i, i + 0.51, i % 5 === 1 ? { transition: { type: "crossfade", duration: 0.2 } } : {})),
+    overlays: [{
+      id: "o1", mediaId: "m_b", start: 12, in: 0, out: 3, speed: 1, volume: 0, layout: "full", fit: "cover", fadeIn: 0.3, fadeOut: 0.5
+    }],
+    texts: [{ id: "t1", text: "Across", start: 11, end: 14, style: "title", position: "center", animation: "words" }],
+    audio: [{ id: "a1", mediaId: "m_s", start: 0, in: 0, out: 120, volume: 1, fadeIn: 0, fadeOut: 2, duck: false, loop: false }]
+  })
+
+  it("keeps small edits whole", () => {
+    expect(pieceBounds(many(30), 30)).toHaveLength(2)
+  })
+
+  it("splits big edits on whole frames at hard cuts", () => {
+    const t = many(120)
+    const bounds = pieceBounds(t, 30)
+    expect(bounds.length).toBeGreaterThan(3)
+    expect(bounds[0]).toBe(0)
+    expect(bounds[bounds.length - 1]).toBeCloseTo(mainDuration(t.main), 6)
+    for (const b of bounds.slice(1, -1)) {
+      expect(Math.abs(b * 30 - Math.round(b * 30))).toBeLessThan(1e-6)
+      const piece = sliceTimeline(t, b, bounds[bounds.length - 1]!)
+      expect(piece.main[0]!.transition).toBeUndefined()
+      expect(piece.main.length).toBeGreaterThan(0)
+    }
+    for (let i = 0; i + 1 < bounds.length; i++) {
+      expect(sliceTimeline(t, bounds[i]!, bounds[i + 1]!).main.length).toBeLessThanOrEqual(PIECE_INPUTS * 2 + 1)
+    }
+  })
+
+  it("renders a piece with raw audio, no end fade, and text moved into place", () => {
+    const t = many(120)
+    const piece = sliceTimeline(t, 10, 20)
+    const { args } = buildRender({
+      timeline: piece,
+      source: (id) => ({ path: `/x/${id}.mp4`, kind: id === "m_s" ? "audio" : "video", hasAudio: true, width: 1920, height: 1080 }),
+      canvas: { width: 960, height: 540, fps: 30, background: "#000000" },
+      assPath: "/x/text.ass",
+      textOffset: 10,
+      speech: [],
+      quality: "final",
+      output: "/x/piece0.mkv",
+      piece: { last: false }
+    })
+    const graph = args[args.indexOf("-filter_complex") + 1]!
+    expect(graph).toContain("setpts=PTS+10/TB,ass=filename=/x/text.ass,setpts=PTS-STARTPTS")
+    expect(graph).not.toContain("loudnorm")
+    expect(graph).not.toMatch(/afade=t=out:st=[\d.]+:d=1\.5/)
+    expect(args).toContain("pcm_f32le")
+    expect(args).not.toContain("+faststart")
+    // The overlay that runs past the piece does not fade out at the edge.
+    expect(piece.overlays[0]).toMatchObject({ fadeOut: 0.5 })
+    expect(sliceTimeline(t, 10, 13).overlays[0]).toMatchObject({ fadeOut: 0 })
+  })
+
+  it("joins pieces by copying video and finishing audio once", () => {
+    const args = joinPieces({ list: "/x/pieces.txt", quality: "final", seconds: 61.2, output: "/x/out.mp4" })
+    expect(args.slice(0, 6)).toEqual(["-f", "concat", "-safe", "0", "-i", "/x/pieces.txt"])
+    expect(args[args.indexOf("-c:v") + 1]).toBe("copy")
+    expect(args[args.indexOf("-af") + 1]).toContain("loudnorm")
   })
 })

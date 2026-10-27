@@ -7,8 +7,8 @@ import type { Word } from "../domain/Media.ts"
 import { round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
-import { buildRender, type Canvas, type SourceInfo } from "../render/graph.ts"
-import { sliceTimeline, stillRange } from "../render/slice.ts"
+import { buildRender, type Canvas, joinPieces, type SourceInfo } from "../render/graph.ts"
+import { pieceBounds, sliceTimeline, stillRange } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
 import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
@@ -57,6 +57,8 @@ export interface RendererShape {
 
 const INDEX_KEY = "db/renders.json"
 const DRAFT_SIDE = 960
+/** A render whose output has not moved for this long is stuck, not slow. */
+const STALL_SECONDS = 240
 
 /** Fonts shipped with owl (assets/fonts), so text looks the same on every machine. */
 const FONTS_DIR = fileURLToPath(new URL("../../assets/fonts", import.meta.url))
@@ -166,15 +168,20 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           readonly workDir: string
           readonly still?: boolean
           readonly stillAt?: number
+          /** A piece of a longer edit: its subtitle file and where the piece starts in it. */
+          readonly piece?: { readonly assPath: string | undefined; readonly offset: number; readonly last: boolean }
           readonly onProgress?: (p: number) => Effect.Effect<void>
         }
       ) =>
         Effect.gen(function*() {
           const sourceMap = yield* sources(timeline, options.quality)
           const words = yield* wordsFor(timeline)
-          const ass = buildAss(timeline, words)
-          const assPath = ass ? `${options.workDir}/text.ass` : undefined
-          if (ass && assPath) yield* fs.writeFileString(assPath, ass)
+          let assPath = options.piece?.assPath
+          if (!options.piece) {
+            const ass = buildAss(timeline, words)
+            assPath = ass ? `${options.workDir}/text.ass` : undefined
+            if (ass && assPath) yield* fs.writeFileString(assPath, ass)
+          }
           const { args, duration } = buildRender({
             timeline,
             source: (id) => sourceMap.get(id)!,
@@ -185,10 +192,13 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             quality: options.quality,
             output: options.output,
             still: options.still,
-            stillAt: options.stillAt
+            stillAt: options.stillAt,
+            textOffset: options.piece?.offset,
+            piece: options.piece && { last: options.piece.last }
           })
           yield* ffmpeg.run(args, {
             duration,
+            stallSeconds: STALL_SECONDS,
             ...(options.onProgress ? { onProgress: options.onProgress } : {})
           })
           return duration
@@ -205,6 +215,57 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           (dir) => fs.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore)
         )
 
+      /**
+       * Renders a long edit piece by piece, so only a few sources are open at a
+       * time, then joins the pieces without encoding the video again. Text is
+       * laid out once for the whole edit, so animations cross the joins intact.
+       */
+      const renderPieces = (
+        timeline: Timeline,
+        bounds: ReadonlyArray<number>,
+        options: {
+          readonly quality: Quality
+          readonly canvas: Canvas
+          readonly output: string
+          readonly workDir: string
+          readonly onProgress: (p: number) => Effect.Effect<void>
+        }
+      ) =>
+        Effect.gen(function*() {
+          const total = bounds[bounds.length - 1]!
+          const ass = buildAss(timeline, yield* wordsFor(timeline))
+          const assPath = ass ? `${options.workDir}/text.ass` : undefined
+          if (ass && assPath) yield* fs.writeFileString(assPath, ass)
+          const files: Array<string> = []
+          let seconds = 0
+          for (let i = 0; i + 1 < bounds.length; i++) {
+            const from = bounds[i]!
+            const to = bounds[i + 1]!
+            const dir = `${options.workDir}/p${i}`
+            yield* fs.makeDirectory(dir).pipe(Effect.orDie)
+            const file = `${options.workDir}/piece${i}.mkv`
+            // Most of the time goes to the pieces; the join is a copy.
+            const done = from / total
+            seconds += yield* renderFile(sliceTimeline(timeline, from, to), {
+              quality: options.quality,
+              canvas: options.canvas,
+              output: file,
+              workDir: dir,
+              piece: { assPath, offset: from, last: i + 2 === bounds.length },
+              onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
+            })
+            files.push(file)
+          }
+          const list = `${options.workDir}/pieces.txt`
+          yield* fs.writeFileString(list, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n")
+          yield* ffmpeg.run(joinPieces({ list, quality: options.quality, seconds, output: options.output }), {
+            duration: seconds,
+            stallSeconds: STALL_SECONDS,
+            onProgress: (p) => options.onProgress(0.95 + 0.05 * p)
+          })
+          return seconds
+        })
+
       const run = (job: RenderJob, timeline: Timeline, canvas: Canvas) =>
         withWorkDir((workDir) =>
           Effect.gen(function*() {
@@ -212,14 +273,12 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             yield* setJob({ ...job, status: "running", progress: 0 })
             const key = `renders/${job.id}.mp4`
             const output = yield* storage.stagingPath(key)
-            const duration = yield* renderFile(timeline, {
-              quality: job.quality,
-              canvas,
-              output,
-              workDir,
-              onProgress: (p) =>
-                setJob({ ...jobs.get(job.id)!, progress: Math.round(Math.min(0.99, p) * 100) / 100 }, false)
-            })
+            const progress = (p: number) =>
+              setJob({ ...jobs.get(job.id)!, progress: Math.round(Math.min(0.99, p) * 100) / 100 }, false)
+            const bounds = pieceBounds(timeline, canvas.fps)
+            const duration = bounds.length <= 2
+              ? yield* renderFile(timeline, { quality: job.quality, canvas, output, workDir, onProgress: progress })
+              : yield* renderPieces(timeline, bounds, { quality: job.quality, canvas, output, workDir, onProgress: progress })
             const stat = yield* fs.stat(output)
             yield* storage.commitFile(key, "video/mp4")
             yield* setJob({
