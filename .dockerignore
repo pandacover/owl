@@ -1,0 +1,9 @@
+node_modules
+.git
+.data
+.wrangler
+dist
+test
+worker
+*.log
+x-*.ts

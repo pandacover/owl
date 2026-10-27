@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "owl",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // One container does all the work: analysis and rendering with FFmpeg.
+  // standard-4 is 4 vCPU, 12 GiB memory, 20 GB disk. It sleeps when idle.
+  "containers": [
+    {
+      "class_name": "OwlContainer",
+      "image": "./Dockerfile",
+      "instance_type": "standard-4",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "OWL", "class_name": "OwlContainer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OwlContainer"] }],
+
+  // Media, analysis, projects and renders live here. The container disk is temporary.
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "owl-media" }],
+
+  // Speech to text (Whisper) and search embeddings.
+  "ai": { "binding": "AI" },
+
+  "vars": {
+    // Claude model that describes shots. claude-haiku-5-5 is much cheaper.
+    "OWL_VISION_MODEL": "claude-opus-5-5"
+  }
+  // Secrets, set with `npx wrangler secret put <NAME>` or in the dashboard:
+  //   OWL_TOKEN          long random string; your MCP URL is https://<worker>/mcp/<OWL_TOKEN>
+  //   ANTHROPIC_API_KEY  for shot descriptions (optional but recommended)
+}

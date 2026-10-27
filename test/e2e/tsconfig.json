@@ -1,0 +1,7 @@
+{
+  // The Cloudflare simulation imports the Worker handlers, which use Workers types, and runs in Node.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["node", "@cloudflare/workers-types"] },
+  "include": ["./*.ts"],
+  "exclude": []
+}
