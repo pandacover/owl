@@ -122,6 +122,10 @@ export const inputCostMb = (width: number, height: number, codec: string | undef
   return frame * (heavy ? 19 : 10) + 4
 }
 
+/** Estimated memory of the sources a timeline opens, in MB. */
+export const timelineCost = (timeline: Timeline, cost: (mediaId: string) => number): number =>
+  [...timeline.main, ...timeline.overlays].reduce((sum, c) => sum + (c.mediaId === BLANK ? 2 : cost(c.mediaId)), 0)
+
 /** What FFmpeg holds for one render before any source is opened, in MB. */
 export const PIECE_BASE_MB = 350
 

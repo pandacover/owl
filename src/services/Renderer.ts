@@ -9,7 +9,7 @@ import { round1, round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
 import { buildRender, type Canvas, ENCODER_THREADS, joinPieces, type SourceInfo } from "../render/graph.ts"
-import { inputCostMb, pieceBounds, sliceTimeline, splitPoint, stillRange } from "../render/slice.ts"
+import { inputCostMb, PIECE_BASE_MB, pieceBounds, sliceTimeline, splitPoint, stillRange, timelineCost } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
 import { errorSummary, Ffmpeg, reapOrphans, STALLED } from "./Ffmpeg.ts"
@@ -307,9 +307,22 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
        * time, then joins the pieces without encoding the video again. Text is
        * laid out once for the whole edit, so animations cross the joins intact.
        */
+      /**
+       * How much more memory sources really take than inputCostMb estimates,
+       * learned from each piece's measured peak. FFmpeg builds and hosts
+       * differ (FFmpeg 7 keeps about twice as many frames in flight as 6).
+       */
+      let costScale = 1.5
+
+      /**
+       * Renders a long edit piece by piece, so only a few sources are open at a
+       * time, then joins the pieces without encoding the video again. Text is
+       * laid out once for the whole edit, so animations cross the joins intact.
+       * Each piece is planned from what is left, with the cost scale learned
+       * from the pieces before it.
+       */
       const renderPieces = (
         timeline: Timeline,
-        bounds: ReadonlyArray<number>,
         options: {
           readonly quality: Quality
           readonly canvas: Canvas
@@ -321,7 +334,9 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
         }
       ) =>
         Effect.gen(function*() {
-          const total = bounds[bounds.length - 1]!
+          const total = timelineDuration(timeline)
+          const fps = options.canvas.fps
+          const cost = (id: string) => options.sources.get(id)?.cost ?? 50
           const ass = buildAss(timeline, yield* wordsFor(timeline))
           const assPath = ass ? `${options.workDir}/text.ass` : undefined
           if (ass && assPath) yield* fs.writeFileString(assPath, ass)
@@ -338,7 +353,9 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               const file = `${options.workDir}/piece${i}.mkv`
               const done = from / total
               const began = Date.now()
-              const result = yield* renderFile(sliceTimeline(timeline, from, to), {
+              const slice = sliceTimeline(timeline, from, to)
+              const estimate = timelineCost(slice, cost)
+              const result = yield* renderFile(slice, {
                 quality: options.quality,
                 canvas: options.canvas,
                 output: file,
@@ -347,7 +364,14 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 sources: options.sources,
                 stallSeconds: PIECE_STALL_SECONDS,
                 onMemory: (peak, free) =>
-                  options.note(`piece ${round3(from)}s to ${round3(to)}s: ${round1((Date.now() - began) / 1000)}s, ffmpeg peak ${peak} MB, lowest free ${free} MB`),
+                  Effect.suspend(() => {
+                    // Learn quickly when sources cost more than thought, slowly when less.
+                    const seen = Math.max(0.5, Math.min(8, (peak - PIECE_BASE_MB) / Math.max(1, estimate)))
+                    costScale = seen > costScale ? seen : costScale * 0.8 + seen * 0.2
+                    return options.note(
+                      `piece ${round3(from)}s to ${round3(to)}s: ${round1((Date.now() - began) / 1000)}s, ffmpeg peak ${peak} MB, lowest free ${free} MB`
+                    )
+                  }),
                 // Most of the time goes to the pieces; the join is a copy.
                 onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
               }).pipe(Effect.result)
@@ -357,7 +381,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 return
               }
               const error = result.failure as { readonly message?: string }
-              const middle = depth < 3 ? splitPoint(timeline, from, to, options.canvas.fps) : undefined
+              const middle = depth < 3 ? splitPoint(timeline, from, to, fps) : undefined
               if (!error.message?.startsWith(STALLED) || middle === undefined) {
                 return yield* Effect.fail(
                   error.message?.startsWith(STALLED)
@@ -369,8 +393,13 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               yield* piece(from, middle, false, depth + 1)
               yield* piece(middle, to, last, depth + 1)
             })
-          for (let i = 0; i + 1 < bounds.length; i++) {
-            yield* piece(bounds[i]!, bounds[i + 1]!, i + 2 === bounds.length, 0)
+          let from = 0
+          while (from < total - 0.5 / fps) {
+            const rest = sliceTimeline(timeline, from, total)
+            const bounds = pieceBounds(rest, fps, (id) => cost(id) * costScale, config.renderMemoryMb)
+            const to = bounds.length > 2 ? Math.round((from + bounds[1]!) * fps) / fps : total
+            yield* piece(from, to, to >= total - 0.5 / fps, 0)
+            from = to
           }
           const list = `${options.workDir}/pieces.txt`
           yield* fs.writeFileString(list, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n")
@@ -392,10 +421,10 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             const progress = (p: number) =>
               setJob({ ...jobs.get(job.id)!, progress: Math.round(Math.min(0.99, p) * 100) / 100 }, false)
             const sourceMap = yield* sources(timeline, job.quality)
-            const bounds = pieceBounds(timeline, canvas.fps, (id) => sourceMap.get(id)?.cost ?? 50, config.renderMemoryMb)
-            const duration = bounds.length <= 2
+            const whole = pieceBounds(timeline, canvas.fps, (id) => (sourceMap.get(id)?.cost ?? 50) * costScale, config.renderMemoryMb)
+            const duration = whole.length <= 2
               ? yield* renderFile(timeline, { quality: job.quality, canvas, output, workDir, onProgress: progress, sources: sourceMap })
-              : yield* renderPieces(timeline, bounds, {
+              : yield* renderPieces(timeline, {
                 quality: job.quality,
                 canvas,
                 output,
