@@ -191,7 +191,7 @@ export const AddAudio = d(
     fill: Schema.optionalKey(d(Schema.Boolean, "Loop to fill until the end of the video. Default false.")),
     duration: Schema.optionalKey(d(Seconds, "Loop to exactly this length."))
   }),
-  "Add music, a voiceover or a sound effect. Music past the end of the video is cut with a short fade."
+  "Add music, a voiceover or a sound effect. Music past the end of the video is cut with a short fade. For a long track, add 2 or 3 pieces (in/out) that follow the edit's energy; media_get lists the track's parts and rises (edit_guide music)."
 )
 
 export const AddText = d(

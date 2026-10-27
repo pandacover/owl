@@ -35,7 +35,7 @@ export const INSTRUCTIONS = `owl edits videos. You drive it with these tools; it
 Workflow:
 1. Get media in. media_upload_link gives a page where the user uploads files from their phone or computer. media_import takes a public URL (direct link, Google Drive or Dropbox share link).
 2. Each file is analyzed in the background: shots with visual descriptions, moments inside still shots and screen recordings (one per screen or step), speech transcript with word timings, music tempo and beats, quiet parts. media_get with wait_seconds waits for it.
-3. Before building, read edit_guide: "principles" and the recipe for the format (cinematic, screen_recording, product_ad, talking_head, montage). The user expects a premium, creative result, not a plain cut.
+3. Before building, read edit_guide: "principles" and the recipe for the format (cinematic, screen_recording, product_ad, talking_head, montage). With music, also read "music": a long track must be scored to the edit, not played from 0. The user expects a premium, creative result, not a plain cut.
 4. Find material with media_search and media_get. Look at frames with preview_frames before choosing shots when looks matter.
 5. project_create, then build the edit with timeline_edit. Send many operations in one call. The main track is magnetic: clips play back to back and gaps close. Overlays, audio, text and blurs sit on top at timeline times and follow their content when the main track changes. Clips can zoom and pan (zoom keyframes) and float as a card over a color or gradient background (fit card).
 6. Smart edits: edit_remove_pauses and edit_remove_fillers for talking footage, edit_beat_montage to cut clips on the beat of a song.
@@ -103,7 +103,7 @@ export const registerTools = Effect.gen(function*() {
     params: Schema.Struct({
       topic: d(
         Schema.Literals(GUIDE_TOPICS),
-        "principles (always), cinematic (dark premium launch film, like Apple or Luma), screen_recording (app or website demos), product_ad (B-roll ads), talking_head, montage (music-driven), text (typography)."
+        "principles (always), cinematic (dark premium launch film, like Apple or Luma), screen_recording (app or website demos), product_ad (B-roll ads), talking_head, montage (music-driven), music (scoring a track to the edit: pick calm and intense parts, land the peak on the reveal), text (typography)."
       )
     }),
     readOnly: true,

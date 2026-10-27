@@ -4,6 +4,7 @@ import { Context, Effect, FileSystem, Layer, Option, Semaphore, Stream } from "e
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OwlConfig } from "../Config.ts"
 import { extractFrames, fitLongSide } from "../analysis/frames.ts"
+import { AUDIO_VERSION } from "../analysis/audio.ts"
 import { runAudioAnalysis } from "../analysis/runAudio.ts"
 import { buildShots, DETECTOR, parseSceneMetadata } from "../analysis/shots.ts"
 import { ENCODER_THREADS } from "../render/graph.ts"
@@ -312,7 +313,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           const work = `${config.cacheDir}/work/${id}`
           yield* fs.makeDirectory(work, { recursive: true })
 
-          let analysis: Analysis = { version: 1, detector: DETECTOR, shots: [] }
+          let analysis: Analysis = { version: 1, detector: DETECTOR, audioVersion: AUDIO_VERSION, shots: [] }
           const save = (next: Analysis) =>
             Effect.suspend(() => {
               analysis = next
@@ -503,6 +504,31 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           })
         )
 
+      /** Redoes the audio analysis (sections, beats, quiet parts) from the source, keeping the transcript. */
+      const reanalyzeAudio = (id: string) =>
+        Effect.gen(function*() {
+          const record = yield* library.get(id)
+          const old = yield* library.analysis(id)
+          if (Option.isNone(old) || !record.probe?.hasAudio) return
+          const work = `${config.cacheDir}/work/${id}-audio`
+          yield* fs.makeDirectory(work, { recursive: true })
+          const source = yield* storage.localPath(record.sourceKey)
+          yield* ffmpeg.run(["-threads", "2", "-i", source, "-vn", "-ac", "1", "-ar", "22050", "-f", "s16le", `${work}/pcm.raw`])
+          const audio = yield* runAudioAnalysis(`${work}/pcm.raw`)
+          yield* fs.remove(work, { recursive: true, force: true }).pipe(Effect.ignore)
+          const latest = yield* library.analysis(id)
+          const base = Option.getOrElse(latest, () => old.value)
+          const analysis: Analysis = { ...base, audio, audioVersion: AUDIO_VERSION }
+          yield* library.saveAnalysis(id, analysis)
+          yield* library.update(id, (r) => ({ ...r, summary: summarize(record.probe!, analysis) }))
+          yield* Effect.logInfo(`re-analyzed audio for ${id}: ${audio.sections?.length ?? 0} sections`)
+        }).pipe(
+          Effect.catch((error) => {
+            const e = error as { readonly message: string; readonly stderr?: string }
+            return Effect.logWarning(`re-analyzing audio for ${id} failed: ${e.message}. ${errorSummary(e.stderr)}`)
+          })
+        )
+
       const resumePending = Effect.gen(function*() {
         for (const record of yield* library.list) {
           if (record.status === "importing" || record.status === "analyzing") {
@@ -516,16 +542,24 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
               Effect.forkIn(scope)
             )
           }
-          if (record.status === "ready" && record.probe?.kind === "video") {
-            const analysis = yield* library.analysis(record.id).pipe(Effect.orElseSucceed(() => Option.none<Analysis>()))
-            if (Option.isSome(analysis) && analysis.value.detector !== DETECTOR && !running.has(record.id)) {
-              running.add(record.id)
-              yield* slots.withPermits(1)(activity.track(redetect(record.id))).pipe(
-                Effect.ensuring(Effect.sync(() => running.delete(record.id))),
-                Effect.forkIn(scope)
-              )
-            }
-          }
+          if (record.status !== "ready" || running.has(record.id)) continue
+          const analysis = yield* library.analysis(record.id).pipe(Effect.orElseSucceed(() => Option.none<Analysis>()))
+          if (Option.isNone(analysis)) continue
+          const a = analysis.value
+          const shots = record.probe?.kind === "video" && a.detector !== DETECTOR
+          // Only music and other sounds long enough to have parts; speech and silence gain nothing.
+          const audio = a.audioVersion !== AUDIO_VERSION && (a.audio?.kind === "music" || a.audio?.kind === "sound") &&
+            (record.probe?.duration ?? 0) >= 20
+          if (!shots && !audio) continue
+          running.add(record.id)
+          // One after the other, so neither save overwrites the other's result.
+          yield* slots.withPermits(1)(activity.track(Effect.andThen(
+            shots ? redetect(record.id) : Effect.void,
+            audio ? reanalyzeAudio(record.id) : Effect.void
+          ))).pipe(
+            Effect.ensuring(Effect.sync(() => running.delete(record.id))),
+            Effect.forkIn(scope)
+          )
         }
       })
 
