@@ -182,7 +182,8 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               while (true) {
                 yield* Effect.sleep("10 seconds")
                 if (Date.now() - movedAt > stall * 1000) {
-                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds and was stopped`, stderr })
+                  const at = lastUs < 0 ? "before the first frame" : `at ${(lastUs / 1e6).toFixed(2)}s${options.duration ? ` of ${options.duration.toFixed(2)}s` : ""}`
+                  return yield* new FfmpegError({ message: `${STALLED} for ${stall} seconds (${at}) and was stopped`, stderr })
                 }
               }
             })
