@@ -210,6 +210,6 @@ export const renderLine = (job: RenderJob, url?: string): string => {
     case "done":
       return `${head} · ${formatDuration(job.duration ?? 0)}, ${job.width}x${job.height}, ${mb(job.bytes ?? 0)}, took ${
         round1(job.took ?? 0)
-      }s${url ? `\nLink (valid 7 days): ${url}` : ""}`
+      }s${url ? `\nLink (valid 7 days): ${url}` : ""}${job.notes?.length ? `\nNotes: ${job.notes.join("; ")}` : ""}`
   }
 }

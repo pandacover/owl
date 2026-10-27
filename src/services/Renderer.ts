@@ -37,6 +37,8 @@ export interface RenderJob {
   readonly took?: number | undefined
   readonly width?: number | undefined
   readonly height?: number | undefined
+  /** What happened along the way, such as pieces that stalled and were retried. */
+  readonly notes?: ReadonlyArray<string> | undefined
 }
 
 export interface RendererShape {
@@ -309,6 +311,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           readonly workDir: string
           readonly onProgress: (p: number) => Effect.Effect<void>
           readonly sources: ReadonlyMap<string, Source>
+          readonly note: (text: string) => Effect.Effect<void>
         }
       ) =>
         Effect.gen(function*() {
@@ -353,6 +356,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                     : result.failure
                 )
               }
+              yield* options.note(`piece ${round3(from)}s to ${round3(to)}s ${error.message.slice(STALLED.length).trim()}, retried in two halves`)
               yield* piece(from, middle, false, depth + 1)
               yield* piece(middle, to, last, depth + 1)
             })
@@ -388,7 +392,8 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
                 output,
                 workDir,
                 onProgress: progress,
-                sources: sourceMap
+                sources: sourceMap,
+                note: (text) => setJob({ ...jobs.get(job.id)!, notes: [...(jobs.get(job.id)!.notes ?? []), text].slice(-10) })
               })
             const stat = yield* fs.stat(output)
             yield* storage.commitFile(key, "video/mp4")
