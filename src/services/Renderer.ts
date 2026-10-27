@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Context, Effect, FileSystem, Layer, Option, Schedule, Semaphore } from "effect"
 import { OwlConfig } from "../Config.ts"
@@ -11,7 +12,7 @@ import { buildRender, type Canvas, ENCODER_THREADS, joinPieces, type SourceInfo 
 import { inputCostMb, pieceBounds, sliceTimeline, splitPoint, stillRange } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
-import { errorSummary, Ffmpeg, STALLED } from "./Ffmpeg.ts"
+import { errorSummary, Ffmpeg, reapOrphans, STALLED } from "./Ffmpeg.ts"
 import { MediaLibrary } from "./MediaLibrary.ts"
 import { Storage } from "./Storage.ts"
 
@@ -103,6 +104,9 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
       const slots = yield* Semaphore.make(config.renderConcurrency)
       const indexLock = yield* Semaphore.make(1)
       const scope = yield* Effect.scope
+
+      const reaped = yield* reapOrphans([resolve(config.cacheDir), resolve(config.dataDir)])
+      if (reaped > 0) yield* Effect.logWarning(`Stopped ${reaped} ffmpeg processes left by an earlier run`)
 
       const jobs = new Map<string, RenderJob>()
       const stored = yield* storage.readJson<ReadonlyArray<RenderJob>>(INDEX_KEY).pipe(Effect.orElseSucceed(() => Option.none()))

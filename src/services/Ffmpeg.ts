@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { Probe } from "../domain/Media.ts"
@@ -91,6 +91,33 @@ export const toProbe = (raw: typeof ProbeJson.Type): Probe => {
 }
 
 const STDERR_TAIL = 4000
+
+/**
+ * Kills ffmpeg processes left behind by an earlier owl process: a server that
+ * is stopped does not take its children with it, and a stuck render keeps its
+ * memory forever. Only processes working on files under `folders` are touched.
+ * Linux only; returns how many were killed.
+ */
+export const reapOrphans = (folders: ReadonlyArray<string>): Effect.Effect<number> =>
+  Effect.promise(async () => {
+    let killed = 0
+    const entries = await readdir("/proc").catch(() => [] as Array<string>)
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue
+      try {
+        const args = (await readFile(`/proc/${entry}/cmdline`, "utf8")).split("\0")
+        if (!args[0]?.endsWith("ffmpeg") || !args.some((a) => folders.some((f) => a.includes(f)))) continue
+        const stat = await readFile(`/proc/${entry}/stat`, "utf8")
+        const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1])
+        if (parent === process.pid) continue
+        process.kill(Number(entry), "SIGKILL")
+        killed++
+      } catch {
+        // Gone already, or not ours to read.
+      }
+    }
+    return killed
+  })
 
 /** Start of the error message when a run is stopped for making no progress. */
 export const STALLED = "ffmpeg made no progress"
@@ -190,7 +217,7 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
               // Not Linux, or the process has ended.
             }
           })
-          const sampler = options.onMemory ? Effect.forever(Effect.andThen(sample, Effect.sleep("1 second"))) : Effect.never
+          const sampler = options.onMemory ? Effect.forever(Effect.andThen(sample, Effect.sleep("250 millis"))) : Effect.never
           const output = Effect.all([readStderr, readProgress], { concurrency: 2, discard: true }).pipe(
             Effect.raceFirst(sampler)
           )
