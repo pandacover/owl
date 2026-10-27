@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { emptyTimeline, type Timeline } from "../../src/domain/Timeline.ts"
 import { buildAss, captionLines, timelineWords } from "../../src/render/ass.ts"
 import { buildRender, duckExpression, joinPieces } from "../../src/render/graph.ts"
-import { PIECE_INPUTS, pieceBounds, sliceTimeline, stillRange } from "../../src/render/slice.ts"
+import { inputCostMb, PIECE_BASE_MB, pieceBounds, sliceTimeline, stillRange } from "../../src/render/slice.ts"
 import { mainDuration } from "../../src/domain/Timeline.ts"
 import { detectMoments } from "../../src/analysis/shots.ts"
 
@@ -239,13 +239,21 @@ describe("long edits in pieces", () => {
     audio: [{ id: "a1", mediaId: "m_s", start: 0, in: 0, out: 120, volume: 1, fadeIn: 0, fadeOut: 2, duck: false, loop: false }]
   })
 
+  const cost = () => 47
   it("keeps small edits whole", () => {
-    expect(pieceBounds(many(30), 30)).toHaveLength(2)
+    expect(pieceBounds(many(20), 30, cost, 1500)).toHaveLength(2)
+  })
+
+  it("estimates memory per source from its frame size and codec", () => {
+    // Measured: about 47 MB per H.264 and 85 MB per HEVC input for a 1179x2556 phone recording.
+    expect(inputCostMb(1179, 2556, "h264")).toBeCloseTo(47, -1)
+    expect(inputCostMb(1179, 2556, "hevc")).toBeCloseTo(90, -1)
+    expect(inputCostMb(540, 960, "h264")).toBeLessThan(15)
   })
 
   it("splits big edits on whole frames at hard cuts", () => {
     const t = many(120)
-    const bounds = pieceBounds(t, 30)
+    const bounds = pieceBounds(t, 30, cost, 1500)
     expect(bounds.length).toBeGreaterThan(3)
     expect(bounds[0]).toBe(0)
     expect(bounds[bounds.length - 1]).toBeCloseTo(mainDuration(t.main), 6)
@@ -256,7 +264,8 @@ describe("long edits in pieces", () => {
       expect(piece.main.length).toBeGreaterThan(0)
     }
     for (let i = 0; i + 1 < bounds.length; i++) {
-      expect(sliceTimeline(t, bounds[i]!, bounds[i + 1]!).main.length).toBeLessThanOrEqual(PIECE_INPUTS * 2 + 1)
+      const piece = sliceTimeline(t, bounds[i]!, bounds[i + 1]!)
+      expect((piece.main.length + piece.overlays.length) * 47).toBeLessThanOrEqual(1500 - PIECE_BASE_MB + 47)
     }
   })
 

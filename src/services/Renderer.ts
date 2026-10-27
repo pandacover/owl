@@ -7,8 +7,8 @@ import type { Word } from "../domain/Media.ts"
 import { round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
-import { buildRender, type Canvas, joinPieces, type SourceInfo } from "../render/graph.ts"
-import { pieceBounds, sliceTimeline, stillRange } from "../render/slice.ts"
+import { buildRender, type Canvas, ENCODER_THREADS, joinPieces, type SourceInfo } from "../render/graph.ts"
+import { inputCostMb, pieceBounds, sliceTimeline, stillRange } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
 import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
@@ -76,6 +76,13 @@ const scaledCanvas = (output: OutputSettings, maxSide: number): Canvas => {
   }
 }
 
+/** A source used by this many clips in a final gets a fast-decoding copy of its picture. */
+const EDIT_COPY_USES = 8
+const PROXY_SIDE = 960
+const editCopyKey = (id: string) => `media/${id}/edit.mp4`
+
+type Source = SourceInfo & { readonly cost: number }
+
 const mediaIds = (t: Timeline) =>
   new Set([...t.main, ...t.overlays, ...t.audio].map((x) => x.mediaId).filter((id) => id !== BLANK))
 
@@ -114,6 +121,57 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           return save ? persist : Effect.void
         })
 
+      const editLock = yield* Semaphore.make(1)
+
+      /**
+       * A copy of a source's picture that seeks and decodes fast: H.264 with
+       * no B-frames, one reference frame and a keyframe every 15 frames, at
+       * the source's size and timing and near-lossless quality. Phone HEVC
+       * holds many frames per decoder and decodes slowly; an edit that cuts
+       * one recording 200 times opens it 200 times. Made once and kept.
+       */
+      const editCopy = (id: string, sourceKey: string, duration: number) =>
+        editLock.withPermits(1)(Effect.gen(function*() {
+          const key = editCopyKey(id)
+          if (yield* storage.exists(key)) return yield* storage.localPath(key)
+          const target = yield* storage.stagingPath(key)
+          const source = yield* storage.localPath(sourceKey)
+          yield* ffmpeg.run([
+            "-threads",
+            "2",
+            "-i",
+            source,
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "fastdecode",
+            "-bf",
+            "0",
+            "-refs",
+            "1",
+            "-g",
+            "15",
+            "-crf",
+            "14",
+            "-pix_fmt",
+            "yuv420p",
+            "-fps_mode",
+            "passthrough",
+            "-threads",
+            String(ENCODER_THREADS),
+            "-movflags",
+            "+faststart",
+            target
+          ], { duration, stallSeconds: STALL_SECONDS })
+          yield* storage.commitFile(key, "video/mp4")
+          return yield* storage.localPath(key)
+        }))
+
       const sources = (timeline: Timeline, quality: Quality) =>
         Effect.forEach(
           mediaIds(timeline),
@@ -125,16 +183,32 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               const useProxy = quality === "draft" && probe.hasVideo && probe.kind === "video" &&
                 record.stages.proxy?.status === "done"
               const path = yield* storage.localPath(useProxy ? proxyKey(id) : record.sourceKey)
-              const info: SourceInfo = {
+              const uses = [...timeline.main, ...timeline.overlays].filter((c) => c.mediaId === id).length
+              const videoPath = quality === "final" && probe.kind === "video" && probe.videoCodec !== "h264" &&
+                  uses >= EDIT_COPY_USES
+                ? yield* editCopy(id, record.sourceKey, probe.duration).pipe(
+                  // The original still works, only slower.
+                  Effect.orElseSucceed(() => undefined)
+                )
+                : undefined
+              const scale = useProxy ? Math.min(1, PROXY_SIDE / Math.max(probe.width, probe.height, 1)) : 1
+              const info: Source = {
                 path,
+                videoPath,
                 kind: probe.kind,
                 hasAudio: probe.hasAudio,
                 width: probe.width,
-                height: probe.height
+                height: probe.height,
+                cost: inputCostMb(
+                  probe.width * scale,
+                  probe.height * scale,
+                  useProxy || videoPath ? "h264" : probe.videoCodec,
+                  probe.kind === "image"
+                )
               }
               return [id, info] as const
             }),
-          { concurrency: 4 }
+          { concurrency: 1 }
         ).pipe(Effect.map((entries) => new Map(entries)))
 
       const wordsFor = (timeline: Timeline) =>
@@ -171,10 +245,12 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           /** A piece of a longer edit: its subtitle file and where the piece starts in it. */
           readonly piece?: { readonly assPath: string | undefined; readonly offset: number; readonly last: boolean }
           readonly onProgress?: (p: number) => Effect.Effect<void>
+          /** Sources already looked up for the whole edit. */
+          readonly sources?: ReadonlyMap<string, Source>
         }
       ) =>
         Effect.gen(function*() {
-          const sourceMap = yield* sources(timeline, options.quality)
+          const sourceMap = options.sources ?? (yield* sources(timeline, options.quality))
           const words = yield* wordsFor(timeline)
           let assPath = options.piece?.assPath
           if (!options.piece) {
@@ -229,6 +305,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           readonly output: string
           readonly workDir: string
           readonly onProgress: (p: number) => Effect.Effect<void>
+          readonly sources: ReadonlyMap<string, Source>
         }
       ) =>
         Effect.gen(function*() {
@@ -252,6 +329,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
               output: file,
               workDir: dir,
               piece: { assPath, offset: from, last: i + 2 === bounds.length },
+              sources: options.sources,
               onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
             })
             files.push(file)
@@ -275,10 +353,18 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
             const output = yield* storage.stagingPath(key)
             const progress = (p: number) =>
               setJob({ ...jobs.get(job.id)!, progress: Math.round(Math.min(0.99, p) * 100) / 100 }, false)
-            const bounds = pieceBounds(timeline, canvas.fps)
+            const sourceMap = yield* sources(timeline, job.quality)
+            const bounds = pieceBounds(timeline, canvas.fps, (id) => sourceMap.get(id)?.cost ?? 50, config.renderMemoryMb)
             const duration = bounds.length <= 2
-              ? yield* renderFile(timeline, { quality: job.quality, canvas, output, workDir, onProgress: progress })
-              : yield* renderPieces(timeline, bounds, { quality: job.quality, canvas, output, workDir, onProgress: progress })
+              ? yield* renderFile(timeline, { quality: job.quality, canvas, output, workDir, onProgress: progress, sources: sourceMap })
+              : yield* renderPieces(timeline, bounds, {
+                quality: job.quality,
+                canvas,
+                output,
+                workDir,
+                onProgress: progress,
+                sources: sourceMap
+              })
             const stat = yield* fs.stat(output)
             yield* storage.commitFile(key, "video/mp4")
             yield* setJob({

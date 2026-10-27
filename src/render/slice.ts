@@ -110,21 +110,44 @@ export const sliceTimeline = (timeline: Timeline, start: number, end: number): T
   return { ...timeline, main, overlays, audio, texts, blurs }
 }
 
-/** Video inputs one render piece may open. Each open decoder holds full-size frames. */
-export const PIECE_INPUTS = 24
+/**
+ * Memory one opened video source holds while a render runs, in MB: about ten
+ * decoded frames in flight, nearly twice that for HEVC, AV1 and VP9, whose
+ * decoders keep more reference frames. Measured on phone recordings.
+ */
+export const inputCostMb = (width: number, height: number, codec: string | undefined, image = false): number => {
+  const frame = (Math.max(2, width) * Math.max(2, height) * 1.5) / 1024 ** 2
+  if (image) return frame * 3 + 2
+  const heavy = codec === "hevc" || codec === "av1" || codec === "vp9"
+  return frame * (heavy ? 19 : 10) + 4
+}
+
+/** What FFmpeg holds for one render before any source is opened, in MB. */
+export const PIECE_BASE_MB = 350
 
 /**
  * Where to split a long edit into pieces that render one at a time, as
- * timeline times from 0 to the end. One piece when the edit is small. Splits
- * sit on hard cuts between main clips, on whole frames, and avoid overlays
- * that span the cut when they can.
+ * timeline times from 0 to the end. One piece when the edit fits in memory.
+ * `cost` is the memory, in MB, one main clip or overlay of a media file holds
+ * while the piece renders (each is a separate decoder with frames in flight).
+ * Splits sit on hard cuts between main clips, on whole frames, and avoid
+ * overlays and audio fades that span the cut when they can.
  */
-export const pieceBounds = (timeline: Timeline, fps: number): ReadonlyArray<number> => {
+export const pieceBounds = (
+  timeline: Timeline,
+  fps: number,
+  cost: (mediaId: string) => number,
+  budgetMb: number
+): ReadonlyArray<number> => {
   const total = timelineDuration(timeline)
   const placed = placeMain(timeline.main)
-  const inputs = placed.filter((p) => p.clip.mediaId !== BLANK).length + timeline.overlays.length
-  if (inputs <= PIECE_INPUTS * 1.5) return [0, total]
-  const overlaysIn = (from: number, to: number) => timeline.overlays.filter((o) => o.start >= from && o.start < to).length
+  const costOf = (mediaId: string) => mediaId === BLANK ? 2 : cost(mediaId)
+  const budget = Math.max(50, budgetMb - PIECE_BASE_MB)
+  const all = placed.reduce((sum, p) => sum + costOf(p.clip.mediaId), 0) +
+    timeline.overlays.reduce((sum, o) => sum + costOf(o.mediaId), 0)
+  if (all <= budget) return [0, total]
+  const overlaysIn = (from: number, to: number) =>
+    timeline.overlays.filter((o) => o.start >= from && o.start < to).reduce((sum, o) => sum + costOf(o.mediaId), 0)
   const within = (t: number, from: number, to: number) => from < t - 1e-6 && to > t + 1e-6
   // A fade cut in two would restart at full strength in the next piece.
   const crossed = (t: number) =>
@@ -134,16 +157,18 @@ export const pieceBounds = (timeline: Timeline, fps: number): ReadonlyArray<numb
       return within(t, a.start, a.start + a.fadeIn) || within(t, end - a.fadeOut, end)
     })
   const bounds = [0]
-  let count = 0
+  let used = 0
   placed.forEach((p, i) => {
     const next = placed[i + 1]
-    count += (p.clip.mediaId === BLANK ? 0 : 1) + overlaysIn(p.start, next ? next.start : total + 1)
+    used += costOf(p.clip.mediaId) + overlaysIn(p.start, next ? next.start : total + 1)
     if (!next || next.clip.transition) return
     const at = Math.round(next.start * fps) / fps
     if (at <= bounds[bounds.length - 1]! + 1 / fps || at >= total - 1 / fps) return
-    if (count >= PIECE_INPUTS * 2 || (count >= PIECE_INPUTS && !crossed(next.start))) {
+    const nextCost = costOf(next.clip.mediaId) + overlaysIn(next.start, placed[i + 2]?.start ?? total + 1)
+    // Cut before the piece would outgrow the budget, earlier when the cut is clean.
+    if (used + nextCost > budget || (used >= budget * 0.7 && !crossed(next.start))) {
       bounds.push(at)
-      count = 0
+      used = 0
     }
   })
   bounds.push(total)
