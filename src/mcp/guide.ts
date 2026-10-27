@@ -3,7 +3,7 @@
  * the server instructions so it costs nothing until the agent asks for it.
  */
 
-export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "text"] as const
+export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "music", "text"] as const
 export type GuideTopic = typeof GUIDE_TOPICS[number]
 
 const PRINCIPLES = `Premium edit principles (read before building any edit)
@@ -37,6 +37,7 @@ Transitions
 
 Sound
 - A premium edit has music. If the user has no track, ask for one (they can upload it with media_upload_link) before the final render, and say why. Cut on beats (media_get detail full lists beat times; edit_beat_montage does it automatically).
+- Score the music to the edit, never just play a long track from 0: calm under the opening, the intense part under the build, a hit on the reveal. Read edit_guide "music" before adding a track.
 
 Ending
 - End card for 2 to 2.5 seconds: product name, one call to action (cta style) and the URL or handle.
@@ -65,7 +66,7 @@ Structure (times from a 68s launch film; scale down for 15 to 30s)
 8. End (4 to 5s): blank card with glow, product name (title, fade), then a 2 to 4 word tagline (statement) alone, fade_black out.
 
 Rhythm: long calm holds at the start and end, fast in the middle. The contrast is what feels expensive.
-Sound: a cinematic track that builds (soft pads, pulse, hit). Ask the user for one; cut the build on beats.
+Sound: a cinematic track that builds (soft pads, pulse, hit). Ask the user for one. Score it with edit_guide "music": a calm part under steps 1 to 6, the intense part from the build, its peak on the end card's first frame.
 
 Example ops (9:16):
 [
@@ -138,6 +139,26 @@ const MONTAGE = `Recipe: music montage
 - Put the best shot on the first downbeat and the strongest drop. End on a held shot with a fade_black ending matching the music's end.
 - Text sparingly: one headline at the start and the cta at the end.`
 
+const MUSIC = `Recipe: scoring an edit with music
+
+You cannot hear the track, so read it: media_get on the music lists its parts by energy (calm, soft, lively, intense, with trend and peak) and its rises (sudden jumps up). Classical pieces and full songs have long calm parts; playing from 0 under a 30s edit gives a few seconds of the quietest part and no build.
+
+Build the score from 2 or 3 pieces of the track with add_audio (in/out), so the music's arc matches the edit's:
+1. Opening: a calm or soft part, in on a phrase start (just after a quiet stretch or on a downbeat).
+2. Build and reveal: the most intense part, or a part that builds. Place it so the part's peak or a rise lands on the edit's biggest moment: start = moment time - (peak - in).
+3. Ending: let the last piece run under the end card and fade_out 1.5 to 2.5s, or end it where a part ends.
+
+Joins: overlap the pieces by 0.3 to 0.6s, fade_out 0.6 on the earlier one and fade_in 0.3 on the later one, and join where the earlier piece is quiet. A clean hard cut into the loud part on a rise also works and feels deliberate.
+Volume: 0.8 to 1 when there is no speech (duck off), 0.2 to 0.3 under speech (duck on).
+Cut picture to the music: the build's fast cuts sit on the intense part's beats (media_get detail full lists beat, downbeat and accent times; add the piece's start minus its in to turn source times into timeline times).
+
+Example: a 30s edit on a 15 minute piece in three movements, calm first part 0:00 to 5:40, intense last part 7:30 to 15:00 with a rise at 9:41:
+[
+  {"op":"add_audio","media":"m_song","in":"0:02","out":"0:20","start":0,"volume":0.9,"duck":false,"fade_in":0.5,"fade_out":0.6},
+  {"op":"add_audio","media":"m_song","in":"9:39.5","out":"9:52","start":17.5,"volume":0.9,"duck":false,"fade_in":0.3,"fade_out":2}
+]
+Here the rise at 9:41 lands at 19s on the timeline, the start of the build.`
+
 const TEXT = `Typography recipes
 
 Styles: statement (thin, calm, no box; the cinematic style), headline (very large, for hooks), title (large), kicker (small spaced capitals above a headline), subtitle and caption (supporting lines), highlight (text on a solid box), cta (call to action box), lower_third (name strip), label (small tag).
@@ -159,5 +180,6 @@ export const GUIDE: Record<GuideTopic, string> = {
   product_ad: PRODUCT_AD,
   talking_head: TALKING_HEAD,
   montage: MONTAGE,
+  music: MUSIC,
   text: TEXT
 }

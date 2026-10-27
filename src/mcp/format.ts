@@ -92,6 +92,18 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
     if (a.silences.length > 0) parts.push(`${a.silences.length} quiet stretches`)
     if (a.accents.length > 0) parts.push(`${a.accents.length} accents (hits)`)
     lines.push("", parts.join(" · "))
+    if (a.sections && a.sections.length > 0) {
+      const label = (e: number) => e < 0.25 ? "calm" : e < 0.5 ? "soft" : e < 0.75 ? "lively" : "intense"
+      lines.push("Parts by energy (0 to 10, relative to this track; pick in/out from these to match the edit):")
+      for (const x of a.sections) {
+        lines.push(
+          `  ${formatRange(x.start, x.end)}  ${label(x.energy)} ${Math.round(x.energy * 10)}/10${x.trend === "steady" ? "" : `, ${x.trend}`}, peak ${formatTime(x.peak)}`
+        )
+      }
+      if (a.rises && a.rises.length > 0) {
+        lines.push(`Rises (energy jumps up; land a reveal or cut into a build here): ${a.rises.map(formatTime).join(", ")}`)
+      }
+    }
     if (full) {
       if (a.downbeats.length > 0) lines.push(`Downbeats (s): ${a.downbeats.map((b) => b.toFixed(2)).join(" ")}`)
       if (a.beats.length > 0) lines.push(`Beats (s): ${a.beats.map((b) => b.toFixed(2)).join(" ")}`)

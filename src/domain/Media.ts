@@ -113,6 +113,20 @@ export interface AudioAnalysis {
   readonly downbeats: ReadonlyArray<number>
   /** Strongest onsets (hits, drops) by strength. */
   readonly accents: ReadonlyArray<number>
+  /** Parts of the track by energy (loudness and how busy the notes are), for longer audio. */
+  readonly sections?: ReadonlyArray<AudioSection> | undefined
+  /** Times where the energy jumps up the most: builds landing, drops, a new loud part. */
+  readonly rises?: ReadonlyArray<number> | undefined
+}
+
+export interface AudioSection {
+  readonly start: number
+  readonly end: number
+  /** 0 to 1, relative to the rest of this track. */
+  readonly energy: number
+  /** The most intense second of the part. */
+  readonly peak: number
+  readonly trend: "steady" | "builds" | "fades"
 }
 
 export interface Word {
@@ -137,6 +151,8 @@ export interface Analysis {
   readonly version: 1
   /** Shot and moment detector that produced `shots`. Older analyses are re-detected at startup. */
   readonly detector?: number | undefined
+  /** Audio analyzer that produced `audio`. Older ones are redone at startup. */
+  readonly audioVersion?: number | undefined
   readonly shots: ReadonlyArray<Shot>
   readonly audio?: AudioAnalysis | undefined
   readonly transcript?: Transcript | undefined

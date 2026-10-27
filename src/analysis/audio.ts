@@ -5,7 +5,7 @@
  * thread without blocking the server. The beat tracker is the dynamic
  * programming method from Ellis (2007), "Beat Tracking by Dynamic Programming".
  */
-import type { AudioAnalysis } from "../domain/Media.ts"
+import type { AudioAnalysis, AudioSection } from "../domain/Media.ts"
 
 export const PCM_SAMPLE_RATE = 22050
 
@@ -335,6 +335,156 @@ export const findAccents = (envelope: OnsetEnvelope, limit = 40): Array<number> 
   return chosen.sort((a, b) => a - b).map((t) => round3(t * hopSeconds))
 }
 
+/** Bump when the audio analysis changes, so stored analyses are redone. */
+export const AUDIO_VERSION = 2
+
+const SECTION_MIN = 8
+const SECTION_WINDOW = 8
+const SECTION_GAP = 1.5
+
+const smooth = (values: ReadonlyArray<number>, radius: number): Array<number> =>
+  values.map((_, i) => {
+    let sum = 0
+    let n = 0
+    for (let j = Math.max(0, i - radius); j <= Math.min(values.length - 1, i + radius); j++) {
+      sum += values[j]!
+      n++
+    }
+    return sum / n
+  })
+
+const mean = (values: ReadonlyArray<number>, from: number, to: number) => {
+  let sum = 0
+  let n = 0
+  for (let i = Math.max(0, from); i < Math.min(values.length, to); i++) {
+    sum += values[i]!
+    n++
+  }
+  return n > 0 ? sum / n : 0
+}
+
+/**
+ * Splits a track into parts by energy, one value per second from loudness and
+ * onset density, each scaled against the track's own range. Long pauses (the
+ * break between movements) always end a part; inside, a part ends where the
+ * next stretch is clearly calmer or busier than the last.
+ */
+export const findSections = (
+  loudness: ArrayLike<number>,
+  loudnessHop: number,
+  envelope: OnsetEnvelope,
+  silences: ReadonlyArray<readonly [number, number]>,
+  duration: number
+): { sections: Array<AudioSection>; rises: Array<number> } => {
+  const seconds = Math.floor(duration)
+  if (seconds < 20) return { sections: [], rises: [] }
+  const perL = Math.round(1 / loudnessHop)
+  const perE = Math.round(1 / envelope.hopSeconds)
+  const loud: Array<number> = []
+  const busy: Array<number> = []
+  for (let s = 0; s < seconds; s++) {
+    let l = 0
+    for (let i = s * perL; i < (s + 1) * perL && i < loudness.length; i++) l += Math.pow(10, loudness[i]! / 10)
+    loud.push(10 * Math.log10(Math.max(1e-9, l / perL)))
+    let e = 0
+    for (let i = s * perE; i < (s + 1) * perE && i < envelope.values.length; i++) e += envelope.values[i]!
+    busy.push(e / perE)
+  }
+  const quiet = (s: number) => silences.some(([a, b]) => b - a >= SECTION_GAP && s + 0.5 >= a && s + 0.5 <= b)
+  const audible = loud.map((_, s) => s).filter((s) => !quiet(s))
+  const scale = (values: Array<number>) => {
+    const picked = audible.map((s) => values[s]!)
+    const lo = percentile(picked, 0.05)
+    const hi = percentile(picked, 0.95)
+    return values.map((v) => Math.min(1, Math.max(0, (v - lo) / Math.max(1e-6, hi - lo))))
+  }
+  const l = scale(loud)
+  const b = scale(busy)
+  const energy = smooth(l.map((v, i) => 0.5 * v + 0.5 * b[i]!), 2)
+
+  // Regions between long pauses.
+  const regions: Array<[number, number]> = []
+  let open: number | undefined
+  for (let s = 0; s <= seconds; s++) {
+    const inside = s < seconds && !quiet(s)
+    if (inside && open === undefined) open = s
+    if (!inside && open !== undefined) {
+      regions.push([open, s])
+      open = undefined
+    }
+  }
+
+  const novelty = (i: number, w: number) => mean(energy, i, i + w) - mean(energy, i - w, i)
+  const cutsIn = (from: number, to: number, threshold: number) => {
+    const peaks: Array<{ at: number; v: number }> = []
+    for (let i = from + SECTION_MIN; i <= to - SECTION_MIN; i++) {
+      const v = Math.abs(novelty(i, Math.min(SECTION_WINDOW, i - from, to - i)))
+      if (v >= threshold && v >= Math.abs(novelty(i - 1, SECTION_WINDOW)) && v >= Math.abs(novelty(i + 1, SECTION_WINDOW))) {
+        peaks.push({ at: i, v })
+      }
+    }
+    peaks.sort((x, y) => y.v - x.v)
+    const chosen: Array<number> = []
+    for (const p of peaks) if (chosen.every((c) => Math.abs(c - p.at) >= SECTION_MIN)) chosen.push(p.at)
+    return chosen.sort((x, y) => x - y)
+  }
+
+  const build = (threshold: number) => {
+    const out: Array<AudioSection> = []
+    for (const [from, to] of regions) {
+      if (to - from < 2) continue
+      const edges = [from, ...cutsIn(from, to, threshold), to]
+      for (let k = 0; k < edges.length - 1; k++) {
+        const s = edges[k]!
+        const e = edges[k + 1]!
+        const third = Math.max(1, Math.floor((e - s) / 3))
+        const slope = mean(energy, e - third, e) - mean(energy, s, s + third)
+        let peak = s
+        for (let i = s; i < e; i++) if (energy[i]! > energy[peak]!) peak = i
+        out.push({
+          start: s,
+          end: e,
+          energy: Math.round(mean(energy, s, e) * 100) / 100,
+          peak,
+          trend: e - s >= 12 && slope > 0.18 ? "builds" : e - s >= 12 && slope < -0.18 ? "fades" : "steady"
+        })
+      }
+    }
+    return out
+  }
+  let threshold = 0.14
+  let sections = build(threshold)
+  while (sections.length > 14 && threshold < 0.6) sections = build(threshold += 0.04)
+  sections = sections.map((x) => ({ ...x, start: round3(x.start), end: round3(Math.min(duration, x.end === seconds ? duration : x.end)) }))
+
+  // Sharpest short-range jumps up, at least 20s apart.
+  const jumps: Array<{ at: number; v: number }> = []
+  for (let i = 3; i < seconds - 3; i++) {
+    if (quiet(i)) continue
+    // Compare with the last sounding seconds, so a loud part after a pause counts as a rise.
+    const before: Array<number> = []
+    for (let j = i - 1; j >= 0 && before.length < 3; j--) if (!quiet(j)) before.push(energy[j]!)
+    if (before.length === 0) continue
+    const v = mean(energy, i, i + 3) - before.reduce((x, y) => x + y, 0) / before.length
+    if (v > 0.2) jumps.push({ at: i, v })
+  }
+  jumps.sort((x, y) => y.v - x.v)
+  const rises: Array<number> = []
+  for (const j of jumps) {
+    if (rises.length >= 6) break
+    if (rises.every((r) => Math.abs(r - j.at) >= 20)) rises.push(j.at)
+  }
+  // Snap each rise to the strongest attack in the second around it.
+  const snapped = rises.map((r) => {
+    let best = r * perE
+    for (let i = Math.max(0, (r - 1) * perE); i < Math.min(envelope.values.length, (r + 1) * perE); i++) {
+      if (envelope.values[i]! > envelope.values[best]!) best = i
+    }
+    return round3(best * envelope.hopSeconds)
+  })
+  return { sections, rises: snapped.sort((x, y) => x - y) }
+}
+
 /** Full analysis. `pcm` is mono signed 16-bit little-endian at `sampleRate`. */
 export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): AudioAnalysis => {
   const samples = new Float32Array(pcm.length)
@@ -367,6 +517,7 @@ export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Aud
   // Rhythmic audio (music) has a clear autocorrelation peak; speech does not.
   const rhythmic = tempo !== undefined && tempo.confidence >= 0.12
   const beats = rhythmic && tempo ? trackBeats(envelope, tempo.periodFrames) : []
+  const { sections, rises } = findSections(loudness, LOUDNESS_HOP, envelope, silences, samples.length / sampleRate)
   return {
     kind: rhythmic ? "music" : "sound",
     hop: LOUDNESS_HOP,
@@ -378,6 +529,7 @@ export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Aud
     tempoConfidence: tempo ? Math.round(tempo.confidence * 100) / 100 : 0,
     beats,
     downbeats: rhythmic ? pickDownbeats(beats, envelope) : [],
-    accents: findAccents(envelope)
+    accents: findAccents(envelope),
+    ...(sections.length > 0 ? { sections, rises } : {})
   }
 }
