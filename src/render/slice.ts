@@ -174,3 +174,16 @@ export const pieceBounds = (
   bounds.push(total)
   return bounds
 }
+
+/** A hard cut between main clips near the middle of [from, to), on a whole frame, if there is one. */
+export const splitPoint = (timeline: Timeline, from: number, to: number, fps: number): number | undefined => {
+  const middle = (from + to) / 2
+  let best: number | undefined
+  for (const p of placeMain(timeline.main)) {
+    if (p.clip.transition) continue
+    const at = Math.round(p.start * fps) / fps
+    if (at <= from + 1 / fps || at >= to - 1 / fps) continue
+    if (best === undefined || Math.abs(at - middle) < Math.abs(best - middle)) best = at
+  }
+  return best
+}

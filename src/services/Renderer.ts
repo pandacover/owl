@@ -8,10 +8,10 @@ import { round3 } from "../domain/Time.ts"
 import { BLANK, type OutputSettings, type Project, type Timeline, timelineDuration } from "../domain/Timeline.ts"
 import { buildAss, timelineWords } from "../render/ass.ts"
 import { buildRender, type Canvas, ENCODER_THREADS, joinPieces, type SourceInfo } from "../render/graph.ts"
-import { inputCostMb, pieceBounds, sliceTimeline, stillRange } from "../render/slice.ts"
+import { inputCostMb, pieceBounds, sliceTimeline, splitPoint, stillRange } from "../render/slice.ts"
 import { Activity } from "./Activity.ts"
 import { proxyKey } from "./Analyzer.ts"
-import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
+import { errorSummary, Ffmpeg, STALLED } from "./Ffmpeg.ts"
 import { MediaLibrary } from "./MediaLibrary.ts"
 import { Storage } from "./Storage.ts"
 
@@ -59,6 +59,8 @@ const INDEX_KEY = "db/renders.json"
 const DRAFT_SIDE = 960
 /** A render whose output has not moved for this long is stuck, not slow. */
 const STALL_SECONDS = 240
+/** Pieces are short, so one that stops moving for this long is retried in two halves. */
+const PIECE_STALL_SECONDS = 75
 
 /** Fonts shipped with owl (assets/fonts), so text looks the same on every machine. */
 const FONTS_DIR = fileURLToPath(new URL("../../assets/fonts", import.meta.url))
@@ -245,6 +247,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           /** A piece of a longer edit: its subtitle file and where the piece starts in it. */
           readonly piece?: { readonly assPath: string | undefined; readonly offset: number; readonly last: boolean }
           readonly onProgress?: (p: number) => Effect.Effect<void>
+          readonly stallSeconds?: number
           /** Sources already looked up for the whole edit. */
           readonly sources?: ReadonlyMap<string, Source>
         }
@@ -274,7 +277,7 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           })
           yield* ffmpeg.run(args, {
             duration,
-            stallSeconds: STALL_SECONDS,
+            stallSeconds: options.stallSeconds ?? STALL_SECONDS,
             ...(options.onProgress ? { onProgress: options.onProgress } : {})
           })
           return duration
@@ -315,24 +318,40 @@ export class Renderer extends Context.Service<Renderer, RendererShape>()("owl/Re
           if (ass && assPath) yield* fs.writeFileString(assPath, ass)
           const files: Array<string> = []
           let seconds = 0
-          for (let i = 0; i + 1 < bounds.length; i++) {
-            const from = bounds[i]!
-            const to = bounds[i + 1]!
-            const dir = `${options.workDir}/p${i}`
-            yield* fs.makeDirectory(dir).pipe(Effect.orDie)
-            const file = `${options.workDir}/piece${i}.mkv`
-            // Most of the time goes to the pieces; the join is a copy.
-            const done = from / total
-            seconds += yield* renderFile(sliceTimeline(timeline, from, to), {
-              quality: options.quality,
-              canvas: options.canvas,
-              output: file,
-              workDir: dir,
-              piece: { assPath, offset: from, last: i + 2 === bounds.length },
-              sources: options.sources,
-              onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
+          let count = 0
+          // FFmpeg 7 now and then stops moving on a graph with many inputs. A
+          // stuck piece is rendered again as two smaller pieces, down to 3 levels.
+          const piece = (from: number, to: number, last: boolean, depth: number): Effect.Effect<void, unknown> =>
+            Effect.gen(function*() {
+              const i = count++
+              const dir = `${options.workDir}/p${i}`
+              yield* fs.makeDirectory(dir).pipe(Effect.orDie)
+              const file = `${options.workDir}/piece${i}.mkv`
+              const done = from / total
+              const result = yield* renderFile(sliceTimeline(timeline, from, to), {
+                quality: options.quality,
+                canvas: options.canvas,
+                output: file,
+                workDir: dir,
+                piece: { assPath, offset: from, last },
+                sources: options.sources,
+                stallSeconds: PIECE_STALL_SECONDS,
+                // Most of the time goes to the pieces; the join is a copy.
+                onProgress: (p) => options.onProgress(0.95 * (done + p * (to - from) / total))
+              }).pipe(Effect.result)
+              if (result._tag === "Success") {
+                seconds += result.success
+                files.push(file)
+                return
+              }
+              const error = result.failure as { readonly message?: string }
+              const middle = depth < 3 ? splitPoint(timeline, from, to, options.canvas.fps) : undefined
+              if (!error.message?.startsWith(STALLED) || middle === undefined) return yield* Effect.fail(result.failure)
+              yield* piece(from, middle, false, depth + 1)
+              yield* piece(middle, to, last, depth + 1)
             })
-            files.push(file)
+          for (let i = 0; i + 1 < bounds.length; i++) {
+            yield* piece(bounds[i]!, bounds[i + 1]!, i + 2 === bounds.length, 0)
           }
           const list = `${options.workDir}/pieces.txt`
           yield* fs.writeFileString(list, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join("\n") + "\n")
