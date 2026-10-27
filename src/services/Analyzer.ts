@@ -4,7 +4,7 @@ import { Context, Effect, FileSystem, Layer, Option, Semaphore, Stream } from "e
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OwlConfig } from "../Config.ts"
 import { extractFrames, fitLongSide } from "../analysis/frames.ts"
-import { AUDIO_VERSION, isSoundEffect } from "../analysis/audio.ts"
+import { AUDIO_VERSION, HITS_MAX_DURATION, isSoundEffect } from "../analysis/audio.ts"
 import { runAudioAnalysis } from "../analysis/runAudio.ts"
 import { buildShots, DETECTOR, parseSceneMetadata } from "../analysis/shots.ts"
 import { ENCODER_THREADS } from "../render/graph.ts"
@@ -578,9 +578,12 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           if (Option.isNone(analysis)) continue
           const a = analysis.value
           const shots = record.probe?.kind === "video" && a.detector !== DETECTOR
-          // Only music and other sounds long enough to have parts; speech and silence gain nothing.
-          const audio = a.audioVersion !== AUDIO_VERSION && (a.audio?.kind === "music" || a.audio?.kind === "sound") &&
-            (record.probe?.duration ?? 0) >= 20
+          // Music and other sounds: parts (version 3) matter for long ones, separate
+          // sounds (version 4) for short ones. Speech and silence gain nothing.
+          const version = a.audioVersion ?? 0
+          const duration = record.probe?.duration ?? 0
+          const audio = (a.audio?.kind === "music" || a.audio?.kind === "sound") &&
+            ((version < 3 && duration >= 20) || (version < 4 && duration <= HITS_MAX_DURATION))
           if (!shots && !audio) continue
           running.add(record.id)
           // One after the other, so neither save overwrites the other's result.
