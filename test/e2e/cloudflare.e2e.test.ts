@@ -57,7 +57,8 @@ const startOwl = async () => {
   owlUrl = `http://127.0.0.1:${port}`
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await fetch(`${owlUrl}/health`)).ok) return
+      // A request that lands while the server is still starting can go unanswered, so each try has a time limit.
+      if ((await fetch(`${owlUrl}/health`, { signal: AbortSignal.timeout(2000) })).ok) return
     } catch {
       await new Promise((r) => setTimeout(r, 100))
     }
