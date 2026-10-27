@@ -336,11 +336,12 @@ export const findAccents = (envelope: OnsetEnvelope, limit = 40): Array<number> 
 }
 
 /** Bump when the audio analysis changes, so stored analyses are redone. */
-export const AUDIO_VERSION = 2
+export const AUDIO_VERSION = 3
 
 const SECTION_MIN = 8
 const SECTION_WINDOW = 8
-const SECTION_GAP = 1.5
+const SECTION_GAP = 2
+const SECTION_LONG = 75
 
 const smooth = (values: ReadonlyArray<number>, radius: number): Array<number> =>
   values.map((_, i) => {
@@ -373,7 +374,6 @@ export const findSections = (
   loudness: ArrayLike<number>,
   loudnessHop: number,
   envelope: OnsetEnvelope,
-  silences: ReadonlyArray<readonly [number, number]>,
   duration: number
 ): { sections: Array<AudioSection>; rises: Array<number> } => {
   const seconds = Math.floor(duration)
@@ -390,7 +390,18 @@ export const findSections = (
     for (let i = s * perE; i < (s + 1) * perE && i < envelope.values.length; i++) e += envelope.values[i]!
     busy.push(e / perE)
   }
-  const quiet = (s: number) => silences.some(([a, b]) => b - a >= SECTION_GAP && s + 0.5 >= a && s + 0.5 <= b)
+  // Pauses are near silence, far below the music. Soft playing (a pianissimo first movement) is not a pause.
+  const pauseDb = Math.min(-55, percentile(loud, 0.5) - 25)
+  const paused = loud.map((v) => v < pauseDb)
+  const pause = paused.map((p, s) => {
+    if (!p) return false
+    let a = s
+    let b = s
+    while (a > 0 && paused[a - 1]) a--
+    while (b < seconds - 1 && paused[b + 1]) b++
+    return b - a + 1 >= SECTION_GAP
+  })
+  const quiet = (s: number) => pause[s] ?? false
   const audible = loud.map((_, s) => s).filter((s) => !quiet(s))
   const scale = (values: Array<number>) => {
     const picked = audible.map((s) => values[s]!)
@@ -434,6 +445,15 @@ export const findSections = (
     for (const [from, to] of regions) {
       if (to - from < 2) continue
       const edges = [from, ...cutsIn(from, to, threshold), to]
+      // A long part hides its own shape; look for its quieter changes too.
+      for (let k = 0; k < edges.length - 1; k++) {
+        if (edges[k + 1]! - edges[k]! <= SECTION_LONG) continue
+        const finer = cutsIn(edges[k]!, edges[k + 1]!, Math.max(0.05, threshold / 2))
+        if (finer.length > 0) {
+          edges.splice(k + 1, 0, ...finer)
+          k += finer.length
+        }
+      }
       for (let k = 0; k < edges.length - 1; k++) {
         const s = edges[k]!
         const e = edges[k + 1]!
@@ -454,7 +474,7 @@ export const findSections = (
   }
   let threshold = 0.14
   let sections = build(threshold)
-  while (sections.length > 14 && threshold < 0.6) sections = build(threshold += 0.04)
+  while (sections.length > 16 && threshold < 0.6) sections = build(threshold += 0.04)
   sections = sections.map((x) => ({ ...x, start: round3(x.start), end: round3(Math.min(duration, x.end === seconds ? duration : x.end)) }))
 
   // Sharpest short-range jumps up, at least 20s apart.
@@ -517,7 +537,7 @@ export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Aud
   // Rhythmic audio (music) has a clear autocorrelation peak; speech does not.
   const rhythmic = tempo !== undefined && tempo.confidence >= 0.12
   const beats = rhythmic && tempo ? trackBeats(envelope, tempo.periodFrames) : []
-  const { sections, rises } = findSections(loudness, LOUDNESS_HOP, envelope, silences, samples.length / sampleRate)
+  const { sections, rises } = findSections(loudness, LOUDNESS_HOP, envelope, samples.length / sampleRate)
   return {
     kind: rhythmic ? "music" : "sound",
     hop: LOUDNESS_HOP,
