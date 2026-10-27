@@ -119,7 +119,9 @@ export const describeMedia = (record: MediaRecord, analysis: Analysis | undefine
         )
       )
       if (shown.some((h) => h.strikes)) {
-        lines.push("  A sound with several strikes is a burst (clicks, knocks). One strike: in = a strike time, out = just before the next strike.")
+        lines.push(
+          "  Strikes are the sharp hits inside a sound; one shutter click has two (open and close). Use a whole sound for one click or hit. Cut between strikes only inside a long burst."
+        )
       }
       if (shown.length < a.hits.length) lines.push(`  ...${a.hits.length - shown.length} more (detail full lists all)`)
     }
