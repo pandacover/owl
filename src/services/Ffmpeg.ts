@@ -8,6 +8,8 @@ export interface RunOptions {
   readonly duration?: number | undefined
   readonly onProgress?: ((fraction: number) => Effect.Effect<void>) | undefined
   readonly cwd?: string | undefined
+  /** Stop ffmpeg when its output clock has not moved for this long. */
+  readonly stallSeconds?: number | undefined
 }
 
 export interface FfmpegShape {
@@ -148,20 +150,41 @@ export class Ffmpeg extends Context.Service<Ffmpeg, FfmpegShape>()("owl/Ffmpeg")
             )
           )
           let lastReported = -1
+          let lastUs = -1
+          let movedAt = Date.now()
           const readProgress = handle.stdout.pipe(
             Stream.decodeText(),
             Stream.splitLines,
             Stream.runForEach((line) => {
-              if (!options.onProgress || !options.duration || !line.startsWith("out_time_us=")) return Effect.void
+              if (!line.startsWith("out_time_us=")) return Effect.void
               const us = Number(line.slice("out_time_us=".length))
               if (!Number.isFinite(us)) return Effect.void
+              if (us > lastUs) {
+                lastUs = us
+                movedAt = Date.now()
+              }
+              if (!options.onProgress || !options.duration) return Effect.void
               const fraction = Math.min(1, Math.max(0, us / 1e6 / options.duration))
               if (fraction - lastReported < 0.01) return Effect.void
               lastReported = fraction
               return options.onProgress(fraction)
             })
           )
-          yield* Effect.all([readStderr, readProgress], { concurrency: 2, discard: true })
+          const output = Effect.all([readStderr, readProgress], { concurrency: 2, discard: true })
+          const stall = options.stallSeconds
+          if (stall === undefined) yield* output
+          else {
+            // A stuck graph keeps the process alive without output; ending the scope kills it.
+            const watchdog = Effect.gen(function*() {
+              while (true) {
+                yield* Effect.sleep("10 seconds")
+                if (Date.now() - movedAt > stall * 1000) {
+                  return yield* new FfmpegError({ message: `ffmpeg made no progress for ${Math.round(stall / 60)} minutes and was stopped`, stderr })
+                }
+              }
+            })
+            yield* Effect.raceFirst(output, watchdog)
+          }
           // No exit code means a signal ended it: on a small machine, the kernel's out-of-memory killer.
           const exitCode = yield* handle.exitCode.pipe(Effect.catchTag("PlatformError", () => Effect.succeed(undefined)))
           if (exitCode === undefined) return yield* new FfmpegError({ message: KILLED, stderr })

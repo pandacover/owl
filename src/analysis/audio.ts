@@ -5,7 +5,7 @@
  * thread without blocking the server. The beat tracker is the dynamic
  * programming method from Ellis (2007), "Beat Tracking by Dynamic Programming".
  */
-import type { AudioAnalysis, AudioSection } from "../domain/Media.ts"
+import type { AudioAnalysis, AudioHit, AudioSection } from "../domain/Media.ts"
 
 export const PCM_SAMPLE_RATE = 22050
 
@@ -336,7 +336,103 @@ export const findAccents = (envelope: OnsetEnvelope, limit = 40): Array<number> 
 }
 
 /** Bump when the audio analysis changes, so stored analyses are redone. */
-export const AUDIO_VERSION = 3
+export const AUDIO_VERSION = 4
+
+/** Audio up to this long is checked for separate hits (sound effects, stingers). */
+export const HITS_MAX_DURATION = 30
+const HIT_HOP = 0.004
+
+/** Short audio of separate sounds with no steady beat: a sound effect, not a song. */
+export const isSoundEffect = (audio: AudioAnalysis, duration: number): boolean =>
+  duration <= HITS_MAX_DURATION && (audio.hits?.length ?? 0) > 0 && audio.tempoConfidence < 0.3
+
+/**
+ * How often the sound repeats, in seconds, when short audio is one sound
+ * played again and again (a shutter burst, a ticking clock): the strongest
+ * clear peak of the level's autocorrelation.
+ */
+const repeatPeriod = (level: Float32Array, hop: number): number | undefined => {
+  const minLag = Math.round(0.08 / hop)
+  const maxLag = Math.min(Math.round(3 / hop), Math.floor(level.length / 3))
+  if (maxLag <= minLag) return undefined
+  let mean = 0
+  for (const v of level) mean += v
+  mean /= level.length
+  const x = Float32Array.from(level, (v) => v - mean)
+  let energy = 0
+  for (const v of x) energy += v * v
+  if (energy <= 0) return undefined
+  const r = new Float32Array(maxLag + 2)
+  for (let lag = minLag - 1; lag <= maxLag + 1; lag++) {
+    let sum = 0
+    for (let i = 0; i + lag < x.length; i++) sum += x[i]! * x[i + lag]!
+    r[lag] = sum / energy
+  }
+  // The first lag that is a local peak and nearly as strong as the best one,
+  // so a sound repeating every 0.19s is not read as repeating every 0.38s.
+  let best = 0
+  for (let lag = minLag; lag <= maxLag; lag++) best = Math.max(best, r[lag]!)
+  if (best < 0.45) return undefined
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    if (r[lag]! >= best * 0.85 && r[lag]! >= r[lag - 1]! && r[lag]! >= r[lag + 1]!) return lag * hop
+  }
+  return undefined
+}
+
+/**
+ * Separate sounds in short audio, measured every 4ms. A sound is a stretch of
+ * sound with silence around it; when the audio is one sound repeated (a
+ * shutter burst), each repeat is one sound even if it has quiet gaps inside,
+ * so an edit can take exactly one with in/out. Sharp jumps in level inside a
+ * sound are counted as attacks.
+ */
+export const findHits = (samples: Float32Array, sampleRate: number, limit = 40): { hits: Array<AudioHit>; repeat?: number } => {
+  const db = rmsDb(samples, HIT_HOP, sampleRate)
+  if (db.length === 0) return { hits: [] }
+  let peak = FLOOR_DB
+  for (const v of db) peak = Math.max(peak, v)
+  const threshold = Math.max(percentile(db, 0.05) + 8, peak - 50)
+  const raw: Array<{ start: number; end: number; loudest: number; transients: number }> = []
+  let i = 0
+  while (i < db.length) {
+    if (db[i]! < threshold) {
+      i++
+      continue
+    }
+    const start = i
+    let loudest = start
+    let transients = 1
+    // A dip of one frame is part of the sound; two quiet frames (8ms) end it.
+    while (i < db.length && (db[i]! >= threshold || (i + 1 < db.length && db[i + 1]! >= threshold))) {
+      if (db[i]! > db[loudest]!) loudest = i
+      if (i - start >= 3 && db[i]! - Math.min(db[i - 1]!, db[i - 2]!, db[i - 3]!) >= 10) transients++
+      i++
+    }
+    if ((i - start) * HIT_HOP >= 0.012) raw.push({ start, end: i, loudest, transients })
+  }
+  const period = raw.length > 2 ? repeatPeriod(Float32Array.from(db, (v) => Math.max(0, v - threshold)), HIT_HOP) : undefined
+  const groups: Array<typeof raw[number]> = []
+  for (const r of raw) {
+    const last = groups[groups.length - 1]
+    // Inside a repeating sound, pieces closer to the sound's start than one period belong to it.
+    if (last && period !== undefined && (r.end - last.start) * HIT_HOP < period * 0.97) {
+      groups[groups.length - 1] = {
+        start: last.start,
+        end: r.end,
+        loudest: db[r.loudest]! > db[last.loudest]! ? r.loudest : last.loudest,
+        transients: last.transients + r.transients
+      }
+    } else groups.push(r)
+  }
+  const hits = groups.slice(0, limit).map((g) => ({
+    start: round3(g.start * HIT_HOP),
+    end: round3(Math.min(g.end * HIT_HOP, samples.length / sampleRate)),
+    peak: round3(g.loudest * HIT_HOP),
+    db: round1(db[g.loudest]!),
+    transients: g.transients
+  }))
+  return period !== undefined ? { hits, repeat: round3(period) } : { hits }
+}
 
 const SECTION_MIN = 8
 const SECTION_WINDOW = 8
@@ -538,6 +634,7 @@ export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Aud
   const rhythmic = tempo !== undefined && tempo.confidence >= 0.12
   const beats = rhythmic && tempo ? trackBeats(envelope, tempo.periodFrames) : []
   const { sections, rises } = findSections(loudness, LOUDNESS_HOP, envelope, samples.length / sampleRate)
+  const { hits, repeat } = samples.length / sampleRate <= HITS_MAX_DURATION ? findHits(samples, sampleRate) : { hits: [] }
   return {
     kind: rhythmic ? "music" : "sound",
     hop: LOUDNESS_HOP,
@@ -550,6 +647,8 @@ export const analyzeAudio = (pcm: Int16Array, sampleRate = PCM_SAMPLE_RATE): Aud
     beats,
     downbeats: rhythmic ? pickDownbeats(beats, envelope) : [],
     accents: findAccents(envelope),
-    ...(sections.length > 0 ? { sections, rises } : {})
+    ...(sections.length > 0 ? { sections, rises } : {}),
+    ...(hits.length > 0 ? { hits } : {}),
+    ...(repeat !== undefined ? { repeatEvery: repeat } : {})
   }
 }

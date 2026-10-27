@@ -3,12 +3,23 @@
  * the server instructions so it costs nothing until the agent asks for it.
  */
 
-export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "music", "text"] as const
+export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "rhythm", "music", "text"] as const
 export type GuideTopic = typeof GUIDE_TOPICS[number]
 
 const PRINCIPLES = `Premium edit principles (read before building any edit)
 
-Pick one style first and keep to it:
+Follow the user's words exactly
+- When the user names a technique ("skip frames", "only the first peak", "no transition", "make it faster"), do exactly that and check it with preview_frames (and the "Separate sounds" list for audio) before rendering. If you cannot tell what they mean, ask once and give your best guess.
+
+Concept first (before the first timeline_edit)
+A recipe gives structure, not an idea, and an edit that only follows a recipe looks like every other edit. Decide these, and tell the user the idea and the surprise in one or two lines when you deliver:
+- The idea: one sentence the viewer should feel, e.g. "your thoughts move faster than your thumbs".
+- A motif: one visual or sound device that comes back and pays off: a word that keeps changing in the same spot, the same push-in getting faster each time, a sound that grows into the music, a match cut where one screen's shape becomes the next.
+- The arc: where tension builds and where it releases. Contrast makes an edit feel designed: still against fast, silence against loud, a small line of text against a full-frame shot.
+- One surprise: a beat the viewer does not expect: a cut to black and silence just before the reveal, a freeze, a reverse, the text finishing a sentence the picture starts.
+Then choose only the material that serves the idea. Use every distinct moment once before repeating any. Never loop the same footage unchanged: when material must return, change it (another moment, zoom point, crop, speed or card versus full frame).
+
+Pick one style and keep to it:
 - Bold social: light or brand-colored background, big headlines, highlight boxes, fast energy. Recipes: screen_recording, product_ad.
 - Cinematic: dark, calm and expensive, thin small text, slow holds then a fast build (the look of Apple and Luma launch films). Recipe: cinematic.
 If the user names a reference ad or says "premium", "cinematic" or "launch film", use cinematic. If unsure, ask.
@@ -44,13 +55,14 @@ Ending
 
 Checking
 - After building: timeline_get, then preview_frames with a project at every text change and every zoom peak. Fix overlaps, cut-off text and unreadable contrast before rendering. Then a draft render.
+- Review like an editor: preview_frames on both sides of the cuts that matter (the hook, the turn, the build, the end). For each cut ask: does the picture clearly change, does it show something new, does it serve the idea? Remove accidental repeats and cuts that look like nothing happened.
 
 Ask the user for anything you cannot see: brand colors, the URL, the one message the ad must land.`
 
 const CINEMATIC = `Recipe: cinematic launch film (dark, calm, premium; modeled on Luma's launch ad)
 
 Look
-- set_output look "cinematic", background #07080A, gradient #141821 (or a dark tone of the brand color).
+- set_output look "cinematic", background #07080A, gradient #141821, or a dark tone of the brand color (for a warm brand like red and cream: background #140E0B, gradient #2A1712, glow #C8705A). With light app screens (white or cream UIs) use look "warm" or "clean" instead: cinematic tints them grey-green.
 - Title cards are main clips with media "blank" and a glow: {"media":"blank","duration":3,"glow":"#9FB6CF"}.
 - Text is quiet: style "statement" (thin, white, no box), centered, one line at a time, at most 6 words. The product name uses style "title" only on the end card. Never highlight boxes, kickers or heavy outlines in this style.
 - Text sits on dark: blank cards or dark footage. Never put white text over a light app screen; cut to a blank card for the line instead.
@@ -122,6 +134,7 @@ const PRODUCT_AD = `Recipe: product ad from B-roll (no speech)
 - Use media_search with what you need ("close-up of the bottle", "hands opening the box") and min_appeal 4.
 - Give still or slow shots a gentle push (zoom 1 to 1.08). Use fit "cover" for full-frame shots; fit "card" for product renders on a plain background.
 - Text: one benefit per shot, 2 to 4 words, rise or words animation. End with cta on a brand-colored box and the URL.
+- Grade with set_output look: warm or clean keep product and light UI colors true; cinematic suits dark footage.
 - Music is essential. edit_beat_montage lays clips on beats fast; refine after.`
 
 const TALKING_HEAD = `Recipe: talking-head video (creator, founder, tutorial)
@@ -138,6 +151,15 @@ const MONTAGE = `Recipe: music montage
 - edit_beat_montage with the clips in story order; cuts land on beats (every 2 beats at fast tempos, every beat for energy peaks).
 - Put the best shot on the first downbeat and the strongest drop. End on a held shot with a fade_black ending matching the music's end.
 - Text sparingly: one headline at the start and the cta at the end.`
+
+const RHYTHM = `Recipe: rhythm edits (cuts that speed up, frame skips, a sound on every cut)
+
+- A frame skip is a cut that jumps forward in the source: the next clip starts later in the source than the last one ended. The jump must show a clear change on screen. Jump between moments (one per screen or step) or shots, never inside a still screen, where nothing visibly moves. Check with preview_frames on both sides of a few cuts.
+- Ramp: each clip about 0.85 to 0.9 times as long as the one before, from about 1.5s down to 0.1s (3 frames at 30fps). Hold the fastest pace for a few seconds, then release: a freeze on the last frame, or a hard cut to black with silence.
+- Short material for a long edit: change each pass so it feels like progress, not a loop: punch in (zoom 1.3 to 2) on a different point, switch between card and full frame, reverse the order, raise the speed.
+- A sound on each cut: media_get on the sound file lists "Separate sounds" (or "One sound repeated", each repeat listed). Take exactly one: add_audio with in = its start and out = its end, start = the cut's start. Raise volume with the pace, about 0.3 to 1. When cuts are under 0.15s apart, put the sound on every second cut so it does not smear into a buzz.
+- Hide private details (contacts, numbers) with add_blur only where they show; a blur band that sits on screen the whole time looks like a mistake.
+- Build all clips in one set_main call. Long edits with hundreds of cuts render fine.`
 
 const MUSIC = `Recipe: scoring an edit with music
 
@@ -180,6 +202,7 @@ export const GUIDE: Record<GuideTopic, string> = {
   product_ad: PRODUCT_AD,
   talking_head: TALKING_HEAD,
   montage: MONTAGE,
+  rhythm: RHYTHM,
   music: MUSIC,
   text: TEXT
 }

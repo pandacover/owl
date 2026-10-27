@@ -4,7 +4,7 @@ import { Context, Effect, FileSystem, Layer, Option, Semaphore, Stream } from "e
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OwlConfig } from "../Config.ts"
 import { extractFrames, fitLongSide } from "../analysis/frames.ts"
-import { AUDIO_VERSION } from "../analysis/audio.ts"
+import { AUDIO_VERSION, isSoundEffect } from "../analysis/audio.ts"
 import { runAudioAnalysis } from "../analysis/runAudio.ts"
 import { buildShots, DETECTOR, parseSceneMetadata } from "../analysis/shots.ts"
 import { ENCODER_THREADS } from "../render/graph.ts"
@@ -13,6 +13,7 @@ import { OwlError } from "../domain/Errors.ts"
 import { formatDuration, round1 } from "../domain/Time.ts"
 import { Activity } from "./Activity.ts"
 import { errorSummary, Ffmpeg } from "./Ffmpeg.ts"
+import { Links } from "./Links.ts"
 import { MediaLibrary } from "./MediaLibrary.ts"
 import { Search } from "./Search.ts"
 import { Storage } from "./Storage.ts"
@@ -58,6 +59,26 @@ const audioKind = (audio: AudioAnalysis | undefined, transcript: Transcript | un
   return audio.kind === "music" ? "speech_and_music" : "speech"
 }
 
+/** The storage key behind one of owl's own signed /f/ links, if the URL is one and its signature holds. */
+export const ownFileKey = (url: string, verify: (expiry: string, signature: string, key: string) => boolean): string | undefined => {
+  let path: string
+  try {
+    path = new URL(url).pathname
+  } catch {
+    return undefined
+  }
+  const match = /^\/f\/(\d+)\/([A-Za-z0-9_-]+)\/(.+)$/.exec(path)
+  if (!match) return undefined
+  let key: string
+  try {
+    key = match[3]!.split("/").map(decodeURIComponent).join("/")
+  } catch {
+    return undefined
+  }
+  if (key.split("/").some((part) => part === ".." || part === "")) return undefined
+  return verify(match[1]!, match[2]!, key) ? key : undefined
+}
+
 export const summarize = (probe: Probe, analysis: Analysis): string => {
   const parts: Array<string> = []
   if (probe.kind === "image") parts.push(`image ${probe.width}x${probe.height}`)
@@ -71,7 +92,9 @@ export const summarize = (probe: Probe, analysis: Analysis): string => {
       const kind = audioKind(audio, analysis.transcript)
       const words = analysis.transcript?.segments.reduce((n, s) => n + s.words.length, 0) ?? 0
       if (kind === "silent") parts.push("silent audio")
-      if (kind === "music" || kind === "speech_and_music") parts.push(`music${audio.tempo ? ` ~${Math.round(audio.tempo)} BPM` : ""}`)
+      if (probe.kind === "audio" && isSoundEffect(audio, probe.duration)) {
+        parts.push(`sound effect, ${audio.hits!.length} separate sound${audio.hits!.length === 1 ? "" : "s"}`)
+      } else if (kind === "music" || kind === "speech_and_music") parts.push(`music${audio.tempo ? ` ~${Math.round(audio.tempo)} BPM` : ""}`)
       if (words > 0) parts.push(`speech (${words} words${analysis.transcript?.language ? `, ${analysis.transcript.language}` : ""})`)
       else if (kind !== "silent") parts.push(analysis.transcript ? "no speech detected" : "speech not checked")
     }
@@ -92,6 +115,7 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
       const search = yield* Search
       const activity = yield* Activity
       const fs = yield* FileSystem.FileSystem
+      const links = yield* Links
       const http = yield* HttpClient.HttpClient
       const slots = yield* Semaphore.make(config.analysisConcurrency)
       const scope = yield* Effect.scope
@@ -103,6 +127,13 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
           if (!url) return yield* OwlError.invalid("This media has no source file and no URL to download it from.")
           yield* library.setStage(record.id, "probe", { status: "running", note: "downloading" })
           const target = yield* storage.stagingPath(record.sourceKey)
+          // owl's own file links (a render, an earlier upload) are read from storage: the
+          // server often cannot reach its own public address from inside.
+          const own = ownFileKey(url, links.verify)
+          if (own !== undefined) {
+            yield* fs.copyFile(yield* storage.localPath(own), target)
+            return yield* storage.commitFile(record.sourceKey, own.endsWith(".mp4") ? "video/mp4" : "application/octet-stream")
+          }
           const response = yield* http.execute(
             HttpClientRequest.get(directDownloadUrl(url)).pipe(HttpClientRequest.setHeader("user-agent", "owl/0.1"))
           )

@@ -59,6 +59,13 @@ export interface GraphInput {
   readonly still?: boolean | undefined
   /** With still: the frame at this time of the timeline instead of the first. */
   readonly stillAt?: number | undefined
+  /** The timeline is a slice starting this late in the edit the subtitle file was built for. */
+  readonly textOffset?: number | undefined
+  /**
+   * One piece of a long edit rendered in pieces: raw float audio in Matroska,
+   * finished (loudness, limiter) only once the pieces are joined.
+   */
+  readonly piece?: { readonly last: boolean } | undefined
 }
 
 const SAMPLE_RATE = 48000
@@ -194,6 +201,8 @@ const blankCard = (g: Graph, canvas: Canvas, glow: string | undefined, frames: n
 const LOOKS: Record<Look, string> = {
   cinematic:
     "eq=contrast=1.08:saturation=0.88:gamma=0.97,colorbalance=rs=-0.05:gs=-0.01:bs=0.06:rh=0.05:gh=0.01:bh=-0.05,vignette=angle=0.55,noise=alls=4:allf=t",
+  warm: "eq=contrast=1.05:saturation=1.04,colorbalance=rm=0.03:bm=-0.03:rh=0.02:bh=-0.02,vignette=angle=0.4,noise=alls=3:allf=t",
+  clean: "eq=contrast=1.05:saturation=1.05,vignette=angle=0.35",
   mono: "hue=s=0,eq=contrast=1.15:gamma=0.95,vignette=angle=0.5,noise=alls=4:allf=t"
 }
 
@@ -629,8 +638,13 @@ const audioLayer = (g: Graph, a: AudioItem, input: GraphInput, total: number, ma
   chain.push(`atrim=end=${n(length)}`, "asetpts=PTS-STARTPTS", `volume=${n(a.volume)}`)
   if (a.fadeIn > 0) chain.push(`afade=t=in:d=${n(a.fadeIn)}`)
   // Music that runs past the end of the video gets a short fade instead of a hard stop.
+  // A piece of a longer render ends where the next piece carries on, so no fade there.
   const cutShort = wanted > length + 0.05
-  const fadeOut = cutShort ? Math.max(a.fadeOut, Math.min(1.5, length / 3)) : a.fadeOut
+  const fadeOut = !cutShort
+    ? a.fadeOut
+    : input.piece && !input.piece.last
+    ? 0
+    : Math.max(a.fadeOut, Math.min(1.5, length / 3))
   if (fadeOut > 0) chain.push(`afade=t=out:st=${n(Math.max(0, length - fadeOut))}:d=${n(fadeOut)}`)
   chain.push(`adelay=${Math.round(a.start * 1000)}:all=1`)
   if (a.duck) {
@@ -693,7 +707,10 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
     const out = g.label("txt")
     const escape = (p: string) => p.replace(/[\\:']/g, "\\$&")
     const fonts = input.fontsDir ? `:fontsdir=${escape(input.fontsDir)}` : ""
-    g.add(`[${v}]ass=filename=${escape(input.assPath)}${fonts}[${out}]`)
+    const offset = input.textOffset ?? 0
+    // The subtitle filter picks events by frame time, so a slice is moved to its place in the edit and back.
+    const ass = `ass=filename=${escape(input.assPath)}${fonts}`
+    g.add(`[${v}]${offset > 0 ? `setpts=PTS+${n(offset)}/TB,${ass},setpts=PTS-STARTPTS` : ass}[${out}]`)
     v = out
   }
   const vout = g.label("vout")
@@ -722,18 +739,37 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
   }
   const afinal = g.label("aout")
   g.add(
-    input.quality === "final"
-      ? `[${aout}]loudnorm=I=-14:TP=-1.5:LRA=11,${AUDIO_FORMAT}[${afinal}]`
-      : `[${aout}]apad=pad_dur=0.3,alimiter=limit=0.95:level=disabled:latency=1,atrim=end=${n(totalFrames / fps)}[${afinal}]`
+    input.piece
+      ? `[${aout}]${AUDIO_FORMAT},apad,atrim=end=${n(totalFrames / fps)}[${afinal}]`
+      : `[${aout}]${finishAudio(input.quality, totalFrames / fps)}[${afinal}]`
   )
 
-  const video = [
-    ...(input.quality === "final"
-      ? ["-c:v", "libx264", "-preset", "faster", "-crf", "19", "-profile:v", "high"]
-      : ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-tune", "fastdecode"]),
-    "-threads",
-    String(ENCODER_THREADS)
-  ]
+  if (input.piece) {
+    return {
+      args: [
+        "-filter_complex_threads",
+        "2",
+        ...g.inputs,
+        "-filter_complex",
+        g.filters.join(";"),
+        "-map",
+        `[${vout}]`,
+        "-map",
+        `[${afinal}]`,
+        ...videoCodec(input.quality),
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        String(fps),
+        "-c:a",
+        "pcm_f32le",
+        "-t",
+        n(totalFrames / fps),
+        input.output
+      ],
+      duration: totalFrames / fps
+    }
+  }
   return {
     args: [
       "-filter_complex_threads",
@@ -745,15 +781,12 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
       `[${vout}]`,
       "-map",
       `[${afinal}]`,
-      ...video,
+      ...videoCodec(input.quality),
       "-pix_fmt",
       "yuv420p",
       "-r",
       String(fps),
-      "-c:a",
-      "aac",
-      "-b:a",
-      input.quality === "final" ? "192k" : "128k",
+      ...audioCodec(input.quality),
       "-movflags",
       "+faststart",
       "-t",
@@ -763,3 +796,51 @@ export const buildRender = (input: GraphInput): { readonly args: Array<string>; 
     duration: totalFrames / fps
   }
 }
+
+/** Loudness for finals, a limiter for drafts. */
+const finishAudio = (quality: "draft" | "final", seconds: number) =>
+  quality === "final"
+    ? `loudnorm=I=-14:TP=-1.5:LRA=11,${AUDIO_FORMAT}`
+    : `apad=pad_dur=0.3,alimiter=limit=0.95:level=disabled:latency=1,atrim=end=${n(seconds)}`
+
+const videoCodec = (quality: "draft" | "final") => [
+  ...(quality === "final"
+    ? ["-c:v", "libx264", "-preset", "faster", "-crf", "19", "-profile:v", "high"]
+    : ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-tune", "fastdecode"]),
+  "-threads",
+  String(ENCODER_THREADS)
+]
+
+const audioCodec = (quality: "draft" | "final") => ["-c:a", "aac", "-b:a", quality === "final" ? "192k" : "128k"]
+
+/**
+ * Joins pieces rendered with `piece`: the video is copied as is and the audio,
+ * one continuous stream, is finished and encoded once.
+ */
+export const joinPieces = (input: {
+  readonly list: string
+  readonly quality: "draft" | "final"
+  readonly seconds: number
+  readonly output: string
+}): Array<string> => [
+  "-f",
+  "concat",
+  "-safe",
+  "0",
+  "-i",
+  input.list,
+  "-map",
+  "0:v",
+  "-map",
+  "0:a",
+  "-c:v",
+  "copy",
+  "-af",
+  finishAudio(input.quality, input.seconds),
+  ...audioCodec(input.quality),
+  "-movflags",
+  "+faststart",
+  "-t",
+  n(input.seconds),
+  input.output
+]

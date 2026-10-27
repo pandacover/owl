@@ -117,6 +117,20 @@ export interface AudioAnalysis {
   readonly sections?: ReadonlyArray<AudioSection> | undefined
   /** Times where the energy jumps up the most: builds landing, drops, a new loud part. */
   readonly rises?: ReadonlyArray<number> | undefined
+  /** Separate sounds in short audio (sound effects), with silence around each. */
+  readonly hits?: ReadonlyArray<AudioHit> | undefined
+  /** Seconds between repeats when short audio is one sound played again and again. */
+  readonly repeatEvery?: number | undefined
+}
+
+export interface AudioHit {
+  readonly start: number
+  readonly end: number
+  /** Time of the loudest moment. */
+  readonly peak: number
+  readonly db: number
+  /** Sharp attacks inside the sound: a shutter is often 2 (open and close). */
+  readonly transients: number
 }
 
 export interface AudioSection {
