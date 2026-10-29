@@ -52,6 +52,9 @@ export const LayoutSchema = Schema.Literals([
   "top_half",
   "bottom_half"
 ])
+/** Color grades for set_output look, in the order the agent sees them. */
+export const LOOKS = ["cinematic", "warm", "clean", "mono", "film", "teal_orange", "bleach", "noir", "golden", "night", "pastel", "vivid"] as const
+
 export const TransitionTypeSchema = Schema.Literals([
   "crossfade",
   "dissolve",
@@ -67,8 +70,17 @@ export const TransitionTypeSchema = Schema.Literals([
   "smooth_up",
   "smooth_down",
   "circle_open",
-  "blur"
-])
+  "blur",
+  "whip_left",
+  "whip_right",
+  "whip_up",
+  "whip_down",
+  "light_leak",
+  "glitch"
+]).annotate({
+  description:
+    "Hard cuts are the default; a transition should mean something. smooth_*: soft push between app steps. blur: calm cinematic blend. whip_*: a fast motion-blurred camera whip (0.2 to 0.3s), for energy and travel; pair with a whoosh. light_leak: a warm film light washes across a dissolve (0.6 to 1.2s), for warm, nostalgic or golden moments. glitch: a digital RGB-split slice (0.12 to 0.2s), for tech and data beats only. fade_black: endings and big pauses. fade_white at 0.15 to 0.25s: a flash on a hit. crossfade and dissolve: time passing."
+})
 export const TransitionSchema = Schema.Struct({
   type: TransitionTypeSchema,
   duration: Schema.optionalKey(d(Seconds, "Seconds, default 0.5."))
@@ -83,8 +95,8 @@ export const TextAnimationSchema = d(
   "words: words appear one by one (great for headlines). typewriter: letters appear one by one. rise: soft slide up. zoom: settles in from slightly larger. pop: bouncy scale."
 )
 export const TextFontSchema = d(
-  Schema.Literals(["sans", "display", "serif", "light"]),
-  "sans: Inter. display: Inter Display, heavy and tight (default for title, headline, highlight, cta). serif: Instrument Serif, elegant editorial look. light: Inter Display Light, thin and calm (cinematic, premium tech)."
+  Schema.Literals(["sans", "display", "serif", "light", "classic", "condensed", "grotesk", "mono"]),
+  "sans: Inter. display: Inter Display, heavy and tight (default for title, headline, highlight, cta). serif: Instrument Serif, elegant editorial look. light: Inter Display Light, thin and calm (cinematic, premium tech). classic: Cormorant Garamond, high-contrast luxury serif (fashion, beauty, hospitality). condensed: Bebas Neue, tall all-caps poster type (sport, fitness, bold promos). grotesk: Space Grotesk, quirky geometric sans (startups, creative tech). mono: IBM Plex Mono, typewriter and code feel (dev tools, data, timestamps)."
 )
 
 const SourceRange = {
@@ -299,8 +311,8 @@ export const SetOutput = d(
     background: Schema.optionalKey(d(Color, "Background color, seen around contain and card media.")),
     gradient: Schema.optionalKey(d(Schema.NullOr(Color), "Second color: the background becomes a diagonal gradient from background to this. null for a flat color.")),
     look: Schema.optionalKey(d(
-      Schema.NullOr(Schema.Literals(["cinematic", "warm", "clean", "mono"])),
-      "Color grade over the whole picture (text stays clean). cinematic: film contrast, cool shadows, warm highlights, vignette and fine grain; best on dark footage, it tints white and cream app screens. warm: gentle warmth, soft vignette and grain; keeps light UIs true. clean: a little contrast and color, soft vignette, no tint. mono: rich black and white. null for none."
+      Schema.NullOr(Schema.Literals(LOOKS)),
+      "Color grade over the whole picture (text stays clean). cinematic: film contrast, cool shadows, warm highlights, vignette and fine grain; best on dark footage, it tints white and cream app screens. warm: gentle warmth, soft vignette and grain; keeps light UIs true. clean: a little contrast and color, soft vignette, no tint. mono: rich black and white. film: soft print film, lifted blacks, warm rolled highlights, grain (lifestyle, memories, travel). teal_orange: blockbuster teal shadows and greens against warm skin (action, sport, cars). bleach: silvery high contrast, low color (gritty, fashion, industrial). noir: hard black and white, crushed blacks, heavy vignette (drama, mystery). golden: amber golden hour warmth (outdoor, food, sunsets). night: cool blue moonlight, darker (night scenes, calm tech). pastel: airy, soft and light, gentle color (beauty, wellness, fashion). vivid: punchy color without clipping skin (products, food, social). Only cinematic, warm, clean and vivid keep app screens and UI colors close to true. null for none."
     ))
   }),
   "Set the output frame size, frame rate or background."

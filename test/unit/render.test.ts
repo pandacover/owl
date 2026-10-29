@@ -5,6 +5,9 @@ import { buildRender, duckExpression, joinPieces } from "../../src/render/graph.
 import { inputCostMb, PIECE_BASE_MB, pieceBounds, splitPoint, sliceTimeline, stillRange } from "../../src/render/slice.ts"
 import { mainDuration } from "../../src/domain/Timeline.ts"
 import { detectMoments } from "../../src/analysis/shots.ts"
+import { STOCK_SOUNDS, stockUrl } from "../../src/domain/Stock.ts"
+import { GUIDE } from "../../src/mcp/guide.ts"
+import { LOOKS } from "../../src/timeline/Ops.ts"
 
 const clip = (id: string, inT: number, out: number, extra: object = {}) =>
   ({ id, mediaId: "m_a", in: inT, out, speed: 1, volume: 1, fit: "auto" as const, ...extra })
@@ -307,5 +310,74 @@ describe("long edits in pieces", () => {
     expect(args.slice(0, 6)).toEqual(["-f", "concat", "-safe", "0", "-i", "/x/pieces.txt"])
     expect(args[args.indexOf("-c:v") + 1]).toBe("copy")
     expect(args[args.indexOf("-af") + 1]).toContain("loudnorm")
+  })
+})
+
+describe("playbook presets", () => {
+  const graphFor = (t: Timeline, look?: Timeline["output"]["look"]) => {
+    const { args } = buildRender({
+      timeline: t,
+      source: (id) => ({ path: `/x/${id}.mp4`, kind: "video", hasAudio: true, width: 1920, height: 1080 }),
+      canvas: { width: 960, height: 540, fps: 30, background: "#000000", look },
+      speech: [],
+      quality: "draft",
+      output: "/x/out.mp4"
+    })
+    return args[args.indexOf("-filter_complex") + 1]!
+  }
+  const cut = (type: string, duration = 0.3): Timeline => ({
+    ...emptyTimeline,
+    main: [clip("c1", 0, 2), clip("c2", 0, 2, { transition: { type, duration } })]
+  })
+
+  it("smears both sides of a whip along its direction", () => {
+    const left = graphFor(cut("whip_left"))
+    expect(left).toContain("avgblur=sizeX=48:sizeY=1")
+    expect(left).toContain("transition=slideleft")
+    expect(graphFor(cut("whip_up"))).toContain("avgblur=sizeX=1:sizeY=27")
+  })
+
+  it("adds a moving warm light over a dissolve for a light leak", () => {
+    const graph = graphFor(cut("light_leak", 0.8))
+    expect(graph).toContain("transition=fade:duration=0.8")
+    expect(graph).toContain("blend=all_mode=screen")
+    expect(graph).toContain("crop=960:540:x='(iw-ow)*t/0.8'")
+  })
+
+  it("tears color channels in a glitch", () => {
+    const graph = graphFor(cut("glitch", 0.15))
+    expect(graph).toContain("transition=hlslice")
+    expect(graph).toContain("rgbashift=rh=-12:bh=12")
+  })
+
+  it("has a grade for every look", () => {
+    for (const look of LOOKS) expect(graphFor(cut("crossfade"), look)).toMatch(/vignette|vibrance/)
+  })
+
+  it("draws text in the new families", () => {
+    const t: Timeline = {
+      ...emptyTimeline,
+      texts: (["classic", "condensed", "grotesk", "mono"] as const).map((font, i) => ({
+        id: `t${i}`,
+        text: font,
+        start: 0,
+        end: 1,
+        style: "headline" as const,
+        position: "center" as const,
+        font,
+        animation: "none" as const
+      }))
+    }
+    const ass = buildAss(t, [])!
+    for (const family of ["Cormorant Garamond Bold", "Bebas Neue", "Space Grotesk Bold", "IBM Plex Mono SemiBold"]) expect(ass).toContain(family)
+  })
+
+  it("lists every stock sound in the guide with an escaped archive link", () => {
+    for (const sound of STOCK_SOUNDS) expect(GUIDE.sounds).toContain(`- ${sound.id}: `)
+    expect(new Set(STOCK_SOUNDS.map((s) => s.id)).size).toBe(STOCK_SOUNDS.length)
+    const boom = stockUrl(STOCK_SOUNDS.find((s) => s.id === "sub_drop")!)
+    expect(boom).toBe(
+      "https://archive.org/download/sonniss-gdc-2026-game-audio-bundle-normalized/344%20Audio%20-%20Bass%20Drops%20%26%20Downers%20Vol.%201/DSGNBass_Bass%20Drop%20%26%20Downer%20Medium%2004_344%20Audio_Bass%20Drops%20%26%20Downers.wav"
+    )
   })
 })

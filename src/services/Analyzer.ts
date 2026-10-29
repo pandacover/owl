@@ -116,7 +116,8 @@ export class Analyzer extends Context.Service<Analyzer, AnalyzerShape>()("owl/An
       const activity = yield* Activity
       const fs = yield* FileSystem.FileSystem
       const links = yield* Links
-      const http = yield* HttpClient.HttpClient
+      // Share links and archives answer with redirects (Dropbox, the Internet Archive); follow them to the file.
+      const http = (yield* HttpClient.HttpClient).pipe(HttpClient.followRedirects(10))
       const slots = yield* Semaphore.make(config.analysisConcurrency)
       const scope = yield* Effect.scope
       const running = new Set<string>()

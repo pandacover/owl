@@ -12,6 +12,7 @@ import {
   placeMain,
   type Timeline,
   timelineDuration,
+  type TransitionType,
   type ZoomKey
 } from "../domain/Timeline.ts"
 
@@ -205,7 +206,20 @@ const LOOKS: Record<Look, string> = {
     "eq=contrast=1.08:saturation=0.88:gamma=0.97,colorbalance=rs=-0.05:gs=-0.01:bs=0.06:rh=0.05:gh=0.01:bh=-0.05,vignette=angle=0.55,noise=alls=4:allf=t",
   warm: "eq=contrast=1.05:saturation=1.04,colorbalance=rm=0.03:bm=-0.03:rh=0.02:bh=-0.02,vignette=angle=0.4,noise=alls=3:allf=t",
   clean: "eq=contrast=1.05:saturation=1.05,vignette=angle=0.35",
-  mono: "hue=s=0,eq=contrast=1.15:gamma=0.95,vignette=angle=0.5,noise=alls=4:allf=t"
+  mono: "hue=s=0,eq=contrast=1.15:gamma=0.95,vignette=angle=0.5,noise=alls=4:allf=t",
+  // The rest put YUV filters (eq, hue) before RGB ones (curves, colorbalance) so each frame converts once.
+  film:
+    "eq=saturation=0.92,curves=r='0/0.04 0.25/0.22 0.5/0.52 0.75/0.8 1/0.96':g='0/0.04 0.25/0.23 0.5/0.5 0.75/0.77 1/0.95':b='0/0.07 0.25/0.24 0.5/0.47 0.75/0.72 1/0.9',vignette=angle=0.45,noise=alls=5:allf=t",
+  teal_orange:
+    "eq=contrast=1.1,huesaturation=hue=35:saturation=-0.35:colors=g,colorbalance=rs=-0.1:gs=0.02:bs=0.08:rh=0.07:gh=0.02:bh=-0.07,vignette=angle=0.45,noise=alls=3:allf=t",
+  bleach: "eq=contrast=1.22:saturation=0.45:gamma=0.95,curves=all='0/0 0.2/0.14 0.5/0.5 0.85/0.9 1/1',vignette=angle=0.5,noise=alls=5:allf=t",
+  noir: "hue=s=0,eq=contrast=1.1,curves=all='0/0 0.15/0.04 0.5/0.48 0.85/0.95 1/1',vignette=angle=0.65,noise=alls=7:allf=t",
+  golden:
+    "eq=contrast=1.04:saturation=1.1,colorbalance=rs=0.05:bs=-0.06:rm=0.08:gm=0.03:bm=-0.08:rh=0.07:gh=0.04:bh=-0.08,curves=all='0/0.03 0.5/0.52 1/0.98',vignette=angle=0.4,noise=alls=3:allf=t",
+  night:
+    "eq=brightness=-0.04:saturation=0.7:contrast=1.05,colorbalance=rs=-0.06:bs=0.1:rm=-0.04:bm=0.06:rh=-0.02:bh=0.04,vignette=angle=0.6,noise=alls=4:allf=t",
+  pastel: "eq=contrast=0.94:saturation=0.85,curves=all='0/0.08 0.5/0.55 1/0.97',colorbalance=rh=0.04:bh=0.02:gs=0.02,vignette=angle=0.3",
+  vivid: "eq=contrast=1.07:saturation=1.06,vibrance=intensity=0.3,vignette=angle=0.3"
 }
 
 /** Media floating on the background with rounded corners and a soft shadow. */
@@ -416,7 +430,66 @@ const XFADE: Record<string, string> = {
   smooth_up: "smoothup",
   smooth_down: "smoothdown",
   circle_open: "circleopen",
-  blur: "hblur"
+  blur: "hblur",
+  whip_left: "slideleft",
+  whip_right: "slideright",
+  whip_up: "slideup",
+  whip_down: "slidedown",
+  light_leak: "fade",
+  glitch: "hlslice"
+}
+
+/**
+ * Blends the last frames of one clip into the first frames of the next. Most
+ * transitions are one xfade. The others dress the blend with ordinary filters
+ * that run only on the overlap frames, so they cost nothing elsewhere.
+ */
+const transitionBlend = (g: Graph, from: string, to: string, type: TransitionType, frames: number, canvas: Canvas): string => {
+  const { width: w, height: h, fps } = canvas
+  const seconds = n(frames / fps)
+  const xfade = (a: string, b: string, kind: string) => {
+    const out = g.label("xv")
+    g.add(`[${a}][${b}]xfade=transition=${kind}:duration=${seconds}:offset=0[${out}]`)
+    return out
+  }
+  const kind = XFADE[type] ?? "fade"
+  if (type.startsWith("whip_")) {
+    // A whip pan: both pictures smeared along the move for the whole push.
+    const horizontal = type === "whip_left" || type === "whip_right"
+    const r = Math.max(2, Math.round((horizontal ? w : h) * 0.05))
+    const smear = horizontal ? `avgblur=sizeX=${r}:sizeY=1` : `avgblur=sizeX=1:sizeY=${r}`
+    const [a, b] = [g.label("wa"), g.label("wb")]
+    g.add(`[${from}]${smear}[${a}]`)
+    g.add(`[${to}]${smear}[${b}]`)
+    return xfade(a, b, kind)
+  }
+  if (type === "light_leak") {
+    // A warm glow drawn once at low size, scaled up, slid across the dissolve and added on top (screen).
+    const mix = g.label("lm")
+    const leak = g.label("lk")
+    const out = g.label("xv")
+    const blob = (cx: number, cy: number, rx: number, ry: number) => `exp(-(pow((X-${cx})/${rx},2)+pow((Y-${cy})/${ry},2)))`
+    const main = blob(120, 50, 70, 45)
+    const flare = blob(230, 30, 50, 30)
+    g.add(`[${xfade(from, to, kind)}]format=gbrp[${mix}]`)
+    g.add(
+      `color=c=black:s=320x90:r=${fps},trim=end_frame=1,format=rgb24,` +
+        `geq=r='min(255,255*(1.1*${main}+0.6*${flare}))':g='150*${main}+70*${flare}':b='60*${main}',` +
+        `scale=${w * 2}:${h}:flags=bicubic,${repeatFrame(frames, fps)},` +
+        `crop=${w}:${h}:x='(iw-ow)*t/${seconds}':y=0,` +
+        `fade=t=in:st=0:d=${n(frames / fps / 2)},fade=t=out:st=${n(frames / fps / 2)}:d=${n(frames / fps / 2)},format=gbrp[${leak}]`
+    )
+    g.add(`[${mix}][${leak}]blend=all_mode=screen:shortest=1,format=yuv420p[${out}]`)
+    return out
+  }
+  if (type === "glitch") {
+    // Horizontal slices with the color channels torn apart and a burst of noise.
+    const out = g.label("xv")
+    const shift = Math.max(2, Math.round(w * 0.012))
+    g.add(`[${xfade(from, to, kind)}]rgbashift=rh=-${shift}:bh=${shift}:edge=wrap,noise=alls=14:allf=t,format=yuv420p[${out}]`)
+    return out
+  }
+  return xfade(from, to, kind)
 }
 
 const BLANK_SOURCE: SourceInfo = { path: "", kind: "image", hasAudio: false, width: 0, height: 0 }
@@ -487,13 +560,12 @@ const mainTrack = (g: Graph, input: GraphInput): { v: string; a: string; frames:
     if (headPiece && prevTail) {
       const transition = placed[i]!.clip.transition!
       const seconds = n(head / fps)
-      const v = g.label("xv")
       // FFmpeg 7's xfade wants a declared constant frame rate on both inputs; trimmed pieces lose it.
       const from = g.label("xf")
       const to = g.label("xt")
       g.add(`[${prevTail.v}]fps=${fps}[${from}]`)
       g.add(`[${headPiece.v}]fps=${fps}[${to}]`)
-      g.add(`[${from}][${to}]xfade=transition=${XFADE[transition.type] ?? "fade"}:duration=${seconds}:offset=0[${v}]`)
+      const v = transitionBlend(g, from, to, transition.type, head, canvas)
       let a = ""
       if (!still) {
         const out = g.label("xo")

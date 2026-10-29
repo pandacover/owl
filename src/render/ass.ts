@@ -23,7 +23,11 @@ const FAMILIES: Record<TextFont, { readonly regular: string; readonly bold: stri
   sans: { regular: "Inter", bold: "Inter" },
   display: { regular: "Inter Display", bold: "Inter Display Black" },
   serif: { regular: "Instrument Serif", bold: "Instrument Serif" },
-  light: { regular: "Inter Display Light", bold: "Inter Display Light" }
+  light: { regular: "Inter Display Light", bold: "Inter Display Light" },
+  classic: { regular: "Cormorant Garamond Medium", bold: "Cormorant Garamond Bold" },
+  condensed: { regular: "Bebas Neue", bold: "Bebas Neue" },
+  grotesk: { regular: "Space Grotesk Medium", bold: "Space Grotesk Bold" },
+  mono: { regular: "IBM Plex Mono Medium", bold: "IBM Plex Mono SemiBold" }
 }
 
 const ALIGN: Record<TextPosition, number> = {

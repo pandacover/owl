@@ -3,7 +3,21 @@
  * the server instructions so it costs nothing until the agent asks for it.
  */
 
-export const GUIDE_TOPICS = ["principles", "cinematic", "screen_recording", "product_ad", "talking_head", "montage", "rhythm", "music", "text"] as const
+import { type SoundCategory, STOCK_SOUNDS } from "../domain/Stock.ts"
+
+export const GUIDE_TOPICS = [
+  "principles",
+  "cinematic",
+  "screen_recording",
+  "product_ad",
+  "talking_head",
+  "montage",
+  "rhythm",
+  "music",
+  "text",
+  "playbook",
+  "sounds"
+] as const
 export type GuideTopic = typeof GUIDE_TOPICS[number]
 
 const PRINCIPLES = `Premium edit principles (read before building any edit)
@@ -43,10 +57,14 @@ Look
 - Keep text out of the bottom 20% of a 9:16 frame (app buttons and captions live there) and away from the main subject.
 - Hide private details with add_blur: phone numbers, contact names, emails, notification badges, personal messages, other apps on a home screen.
 
+Playbook
+- edit_guide "playbook" pairs looks, transitions, fonts and stock sounds by mood (luxury, sport, tech, drama and more). Pick from it after the concept, so every choice serves the idea.
+
 Transitions
 - Default to hard cuts. Use smooth_left or smooth_up (0.3 to 0.4s) to move between app steps, or blur (0.3s) in the cinematic style. Avoid crossfades between UI screens; they look muddy. fade_black only at the very end.
 
 Sound
+- Sound design sells the picture: a whoosh on a whip, a hit on the reveal, a pop on a tap. edit_guide "sounds" lists stock effects you can import by name.
 - A premium edit has music. If the user has no track, ask for one (they can upload it with media_upload_link) before the final render, and say why. Cut on beats (media_get detail full lists beat times; edit_beat_montage does it automatically).
 - Score the music to the edit, never just play a long track from 0: calm under the opening, the intense part under the build, a hit on the reveal. Read edit_guide "music" before adding a track.
 
@@ -195,6 +213,67 @@ Text over a light or busy screen (white app UIs): give it a box with background,
 Length: headlines 3 to 6 words, benefit lines up to 5 words, nothing longer than 2 lines in 9:16.
 Check every text with preview_frames before rendering.`
 
+const PLAYBOOK = `Playbook: looks, transitions, fonts and sounds that belong together
+
+This is a menu, not a recipe. Decide the concept first (principles), then pick from one row so the choices agree with each other. Mixing rows (a glitch in a luxury film, Bebas in a calm cinematic piece) is what makes an edit look like stock.
+
+Pairings (look · transitions · fonts · sounds)
+- Cinematic launch film: look cinematic or night · hard cuts, blur 0.3s, fade_black at the end · light (statement), display for the name · whoosh_air, riser_strings into the reveal, boom_trailer or sub_drop on it, hit_chord on the end card.
+- Luxury, beauty, fashion: look pastel, film or golden · hard cuts, crossfade 0.6 to 1s, light_leak once · classic for headlines with light for small lines, kicker in sans · whoosh_glass, sub_drop_slow, page_turn.
+- Warm lifestyle, travel, memories: look film or golden · light_leak 0.8 to 1.2s between places, crossfade · serif or classic · whoosh_wind, page_turn, a soft hit_chord at the end.
+- Sport, fitness, energy: look teal_orange or bleach · hard cuts on beats, whip_left/whip_right 0.2 to 0.25s · condensed (uppercase by design) for headlines · whoosh_fast on every whip, hit_modern or sub_drop_fast on slams, braam once for the hero moment.
+- Tech product, startup: look clean or vivid · smooth_left/smooth_up 0.35s between steps, whip_up for section changes · grotesk or display, mono for numbers and code · ui_pop, ui_snap on taps, ui_tick under word-by-word text, whoosh_sweep on pushes.
+- Dev tools, data, security: look night or clean · hard cuts, glitch 0.12 to 0.2s at most twice · mono with grotesk · glitch_short with each glitch, ui_readout under charts, typewriter_key under typewriter text.
+- Drama, mystery, documentary: look noir, bleach or mono · hard cuts, fade_black, long holds · classic or serif, small · riser_metal, downer_tone before a cut to black, clock_tick for tension, boom_deep for the turn.
+- Food and products: look vivid or golden · hard cuts on beats, zoom_in on the hero · display or grotesk · click_latch or ui_snap on product moments, whoosh_sweep, hit_modern on the logo.
+
+Looks
+cinematic, warm, clean, vivid keep app screens close to true. film, golden, pastel, teal_orange, bleach, night, noir and mono change the picture strongly: use them on camera footage, and check light app screens with preview_frames. One look per edit.
+
+Transitions
+- Hard cuts are the default. A transition is a choice: at most one or two kinds per edit, used the same way each time so it becomes part of the motif.
+- whip_*: 0.2 to 0.3s. The direction should follow the motion in the shots or the reading direction. Always with a whoosh (whoosh_fast) starting about 0.1s before the cut.
+- light_leak: 0.6 to 1.2s, warm and soft, once or twice per edit. Not between app screens. Under mono or noir the light turns grey; pair it with film, golden, warm or pastel.
+- glitch: 0.12 to 0.2s, only for tech, data or error moments, never more than twice.
+- fade_white at 0.15 to 0.25s on a beat reads as a camera flash.
+
+Fonts
+At most two per edit: one with character for headlines (classic, condensed, grotesk, serif or display) and a quiet one for small lines (light, sans or mono). condensed is all capitals by design; keep its lines to 1 to 4 words. classic needs size: use it at title or headline size, not for captions.
+
+Sound design
+A premium edit is mixed, not just scored. Read edit_guide "sounds" for the stock sounds and how to time them. Sound effects support picture changes the viewer should feel: a few well-placed sounds beat a sound on every cut (except rhythm edits, where that is the point).`
+
+const soundList = (category: SoundCategory) =>
+  STOCK_SOUNDS.filter((s) => s.category === category).map((s) => `- ${s.id}: ${s.use}`).join("\n")
+
+const SOUNDS = `Stock sound effects
+
+Hand-picked professional sound design (Sonniss GameAudioGDC bundles, royalty free, no credit needed). Bring one in with media_import {"stock": "<name>"}: it returns a media id (the same id if it was imported before). Then media_get on it lists its separate sounds with times; use add_audio with that media id, in/out around one sound.
+
+Whooshes (start 0.1 to 0.2s before the cut so the loudest part lands on it)
+${soundList("whoosh")}
+
+Risers (end exactly on the reveal: start = reveal time - riser length)
+${soundList("riser")}
+
+Impacts (on the first frame of the moment they mark)
+${soundList("impact")}
+
+Interface (on the frame of the tap or change on screen)
+${soundList("ui")}
+
+Glitch (very short, tech edits only)
+${soundList("glitch")}
+
+Foley (real objects, for texture and motifs)
+${soundList("foley")}
+
+Mixing
+- Volume: whooshes and UI 0.3 to 0.6, impacts 0.6 to 1, under speech keep effects at 0.2 to 0.4 and away from words.
+- Leave room: drop the music 1 to 2 steps (fade or a quieter part) under a big hit or a braam, or cut the music for a beat of silence before it.
+- Long tails (booms, braams, chords): fade_out 0.5 to 1s so they do not ring into the next scene.
+- Music still comes from the user. Stock sounds never replace a music track.`
+
 export const GUIDE: Record<GuideTopic, string> = {
   principles: PRINCIPLES,
   cinematic: CINEMATIC,
@@ -204,5 +283,7 @@ export const GUIDE: Record<GuideTopic, string> = {
   montage: MONTAGE,
   rhythm: RHYTHM,
   music: MUSIC,
-  text: TEXT
+  text: TEXT,
+  playbook: PLAYBOOK,
+  sounds: SOUNDS
 }

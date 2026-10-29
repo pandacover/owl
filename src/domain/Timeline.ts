@@ -50,6 +50,12 @@ export type TransitionType =
   | "smooth_down"
   | "circle_open"
   | "blur"
+  | "whip_left"
+  | "whip_right"
+  | "whip_up"
+  | "whip_down"
+  | "light_leak"
+  | "glitch"
 
 export interface Transition {
   readonly type: TransitionType
@@ -136,7 +142,7 @@ export type TextStyle =
   | "label"
   | "statement"
 export type TextPosition = "center" | "top" | "bottom" | "lower_left" | "upper_left" | "upper_right"
-export type TextFont = "sans" | "display" | "serif" | "light"
+export type TextFont = "sans" | "display" | "serif" | "light" | "classic" | "condensed" | "grotesk" | "mono"
 export type TextAnimation = "none" | "fade" | "pop" | "slide_up" | "words" | "typewriter" | "rise" | "zoom"
 
 export interface TextItem {
@@ -190,7 +196,19 @@ export interface OutputSettings {
   readonly look?: Look | undefined
 }
 
-export type Look = "cinematic" | "warm" | "clean" | "mono"
+export type Look =
+  | "cinematic"
+  | "warm"
+  | "clean"
+  | "mono"
+  | "film"
+  | "teal_orange"
+  | "bleach"
+  | "noir"
+  | "golden"
+  | "night"
+  | "pastel"
+  | "vivid"
 
 export interface Timeline {
   readonly output: OutputSettings
