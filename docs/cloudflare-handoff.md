@@ -65,6 +65,8 @@ Do these in a Claude chat with the new connector:
 - [ ] A long final with many cuts (like the 1:30 shutter edit) finishes. The render notes show each piece's peak memory.
 - [ ] After 15 minutes idle, call `project_list`. The container wakes and the projects are still there (they live in R2).
 
+If no build starts after a push to `main`, open the Worker's **Settings**, then **Builds**. A note saying the project is disconnected from your Git account means the Cloudflare GitHub app lost access: use **Manage** to give it the `owl` repo again.
+
 If something fails, look at the Worker's **Logs** tab and the **Containers** page in the Cloudflare dashboard for the container's output.
 
 ### 7. Data from Daytona
