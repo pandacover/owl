@@ -194,7 +194,8 @@ describe("owl on Cloudflare (simulated)", () => {
     const video = await fetch(link, { headers: { range: "bytes=0-1023" } })
     expect(video.status).toBe(206)
     expect(video.headers.get("content-type")).toBe("video/mp4")
-    const tampered = await fetch(link.replace(/\/f\/(\d+)\/./, "/f/$1/x"))
+    // Change the signature's first character to a different one, so it never matches by chance.
+    const tampered = await fetch(link.replace(/\/f\/(\d+)\/(.)/, (_, expiry, c) => `/f/${expiry}/${c === "x" ? "y" : "x"}`))
     expect(tampered.status).toBe(403)
   }, 120_000)
 
