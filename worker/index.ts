@@ -42,10 +42,15 @@ export class OwlContainer extends Container<Env> {
   // Sleep when idle. Background jobs keep it awake through owl.ctl/keepalive.
   override sleepAfter = "15m"
 
-  static override outboundByHost = {
-    "owl.r2": r2Handler,
-    "owl.ai": aiHandler,
-    "owl.ctl": ctlHandler
+  // Assigned in a static block, not declared as a static field: a field would
+  // shadow Container's setter, so ContainerProxy would never find the handlers
+  // and owl.r2 requests would go out to the internet (HTTP 530).
+  static {
+    this.outboundByHost = {
+      "owl.r2": r2Handler,
+      "owl.ai": aiHandler,
+      "owl.ctl": ctlHandler
+    }
   }
 
   constructor(ctx: DurableObjectState<{}>, env: Env) {
