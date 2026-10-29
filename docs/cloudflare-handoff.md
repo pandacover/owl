@@ -12,7 +12,9 @@ Written 2026-10-27. Owl has only run on the Daytona test sandbox so far. The Clo
 | Storage | Sandbox disk (10 GB) | R2 bucket, kept when the container sleeps |
 | Speech and search | Workers AI over REST (needs `CF_API_TOKEN`) | Workers AI binding, no token |
 
-The render stalls and memory failures on Daytona came from the 4 GB limit. Big renders measured about 2.6 GB per piece there. On Cloudflare owl gives one render 4.5 GB (`OWL_RENDER_MEMORY_MB` in `worker/index.ts`), so pieces can be bigger and fewer.
+The memory failures on Daytona came from the 4 GB limit. Big renders measured about 2.6 GB per piece there. On Cloudflare owl gives one render 4.5 GB (`OWL_RENDER_MEMORY_MB` in `worker/index.ts`), so pieces can be bigger and fewer.
+
+The render stalls are a different problem and will happen on Cloudflare too, because both use the same FFmpeg 7 from Debian trixie. FFmpeg sometimes stops exactly one second before the end of a piece, even with 2 GB free. Owl now tells FFmpeg to finish when that happens and keeps the piece if every frame is there. In a test on 2026-10-27, the 1:30 shutter edit (222 cuts) took 263 seconds instead of 571, with no pieces redone. The render notes say "finished cleanly" when this happens.
 
 ## Steps
 
@@ -32,6 +34,7 @@ Cloudflare deploys the branch it watches, which defaults to `main`. All the work
 
 1. Open **Workers & Pages**, then **Create**, then **Import a repository**, and pick `pandacover/owl`.
 2. Keep the deploy command `npx wrangler deploy`. It builds the container image from the `Dockerfile` and rolls it out. No Docker on your side. The first deploy takes a few minutes.
+3. If the Worker already exists (for example it was made by hand first), open it, then **Settings**, then **Builds**, then **Connect**, and pick `pandacover/owl` with branch `main`. Builds start only on a new push to `main`, so connecting alone does not deploy.
 
 ### 4. Secrets
 
