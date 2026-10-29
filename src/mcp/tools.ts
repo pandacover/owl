@@ -4,6 +4,7 @@ import { OwlError } from "../domain/Errors.ts"
 import { newId, randomCode } from "../domain/Ids.ts"
 import type { Analysis } from "../domain/Media.ts"
 import { formatDuration, formatRange, formatTime, parseTime, round3, TimeInput } from "../domain/Time.ts"
+import { STOCK_IDS, stockSound, stockUrl } from "../domain/Stock.ts"
 import { mainDuration, type Project, timelineDuration } from "../domain/Timeline.ts"
 import { extractFrames } from "../analysis/frames.ts"
 import { ClipInput, EditOp } from "../timeline/Ops.ts"
@@ -33,9 +34,9 @@ const WaitSeconds = d(
 export const INSTRUCTIONS = `owl edits videos. You drive it with these tools; it does the heavy work (analysis, rendering) in the cloud.
 
 Workflow:
-1. Get media in. media_upload_link gives a page where the user uploads files from their phone or computer. media_import takes a public URL (direct link, Google Drive or Dropbox share link).
+1. Get media in. media_upload_link gives a page where the user uploads files from their phone or computer. media_import takes a public URL (direct link, Google Drive or Dropbox share link), or a stock sound effect by name (edit_guide "sounds").
 2. Each file is analyzed in the background: shots with visual descriptions, moments inside still shots and screen recordings (one per screen or step), speech transcript with word timings, music tempo and beats, quiet parts. media_get with wait_seconds waits for it.
-3. Before building, read edit_guide: "principles" and the recipe for the format (cinematic, screen_recording, product_ad, talking_head, montage, rhythm). Decide the concept (idea, motif, arc, one surprise) before building. With music, also read "music": a long track must be scored to the edit, not played from 0. The user expects a premium, creative result, not a plain cut.
+3. Before building, read edit_guide: "principles" and the recipe for the format (cinematic, screen_recording, product_ad, talking_head, montage, rhythm). Decide the concept (idea, motif, arc, one surprise) before building, then pick looks, transitions, fonts and sounds from "playbook". With music, also read "music": a long track must be scored to the edit, not played from 0. The user expects a premium, creative result, not a plain cut.
 4. Find material with media_search and media_get. Look at frames with preview_frames before choosing shots when looks matter.
 5. project_create, then build the edit with timeline_edit. Send many operations in one call. The main track is magnetic: clips play back to back and gaps close. Overlays, audio, text and blurs sit on top at timeline times and follow their content when the main track changes. Clips can zoom and pan (zoom keyframes) and float as a card over a color or gradient background (fit card).
 6. Smart edits: edit_remove_pauses and edit_remove_fillers for talking footage, edit_beat_montage to cut clips on the beat of a song.
@@ -103,7 +104,7 @@ export const registerTools = Effect.gen(function*() {
     params: Schema.Struct({
       topic: d(
         Schema.Literals(GUIDE_TOPICS),
-        "principles (always), cinematic (dark premium launch film, like Apple or Luma), screen_recording (app or website demos), product_ad (B-roll ads), talking_head, montage (music-driven), rhythm (cuts that speed up, frame skips, a sound effect on each cut), music (scoring a track to the edit: pick calm and intense parts, land the peak on the reveal), text (typography)."
+        "principles (always), cinematic (dark premium launch film, like Apple or Luma), screen_recording (app or website demos), product_ad (B-roll ads), talking_head, montage (music-driven), rhythm (cuts that speed up, frame skips, a sound effect on each cut), music (scoring a track to the edit: pick calm and intense parts, land the peak on the reveal), text (typography), playbook (looks, transitions, fonts and sounds paired by mood), sounds (stock sound effects to import by name, and how to time them)."
       )
     }),
     readOnly: true,
@@ -174,18 +175,28 @@ export const registerTools = Effect.gen(function*() {
     name: "media_import",
     title: "Import media from URL",
     description:
-      "Import a video, audio or image file from a public URL: a direct file link, a Google Drive share link (file shared with \"anyone with the link\") or a Dropbox share link. Returns a media id right away; download and analysis continue in the background.",
+      "Import a video, audio or image file from a public URL: a direct file link, a Google Drive share link (file shared with \"anyone with the link\") or a Dropbox share link. Or bring in a stock sound effect by name (edit_guide \"sounds\" lists them). Returns a media id right away; download and analysis continue in the background.",
     params: Schema.Struct({
-      url: d(Schema.String.check(Schema.isPattern(/^https?:\/\//)), "Public http(s) URL."),
+      url: opt(d(Schema.String.check(Schema.isPattern(/^https?:\/\//)), "Public http(s) URL.")),
+      stock: opt(d(Schema.Literals(STOCK_IDS), "A stock sound effect by name, instead of url. Imported once; later calls return the same media id.")),
       name: opt(d(Schema.String, "Display name. Default: the file name from the URL."))
     }),
     openWorld: true,
-    handle: ({ url, name }) =>
+    handle: ({ url, stock, name }) =>
       Effect.gen(function*() {
-        const displayName = name ?? guessName(url)
+        if ((url === undefined) === (stock === undefined)) return yield* OwlError.invalid("Give either url or stock.")
+        const sound = stock === undefined ? undefined : stockSound(stock)
+        const source = sound ? stockUrl(sound) : url!
+        if (sound) {
+          const existing = (yield* library.list).find((r) => r.origin.url === source && r.status !== "failed")
+          if (existing) {
+            return `Stock sound "${sound.id}" is already in the library as ${existing.id} (${existing.status}). Use media "${existing.id}".`
+          }
+        }
+        const displayName = name ?? (sound ? `${sound.id}.wav` : guessName(source))
         const ext = /\.([a-z0-9]{2,5})$/i.exec(displayName)?.[1]?.toLowerCase() ?? "bin"
         const id = newId("m")
-        yield* library.create({ id, name: displayName, sourceKey: `media/${id}/source.${ext}`, origin: { type: "url", url } })
+        yield* library.create({ id, name: displayName, sourceKey: `media/${id}/source.${ext}`, origin: { type: "url", url: source } })
         yield* analyzer.start(id)
         return `Importing ${id} ${JSON.stringify(displayName)}. Call media_get with media "${id}" and wait_seconds to follow it.`
       })

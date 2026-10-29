@@ -33,7 +33,7 @@ It is written in TypeScript with [Effect](https://effect.website) and runs on Cl
 | `render_start`, `render_status` | Draft and final renders with download links |
 | `edit_guide` | Editing recipes the agent reads before building (principles, screen recordings, product ads, talking heads, montages, text) |
 
-Looks the timeline supports: framed cards on a gradient background with rounded corners and a shadow, keyframed zoom and pan, headline, kicker and highlight text styles in display, serif, sans or light fonts (bundled in `assets/fonts`, OFL), word by word and typewriter text, blur regions for private details, slide, circle and blur transitions, blank title cards with a soft drifting light, and a cinematic or mono color grade. Screen recordings are split into moments, one per screen or step.
+Looks the timeline supports: framed cards on a gradient background with rounded corners and a shadow, keyframed zoom and pan, headline, kicker and highlight text styles in eight bundled fonts (`assets/fonts`, OFL), word by word and typewriter text, blur regions for private details, slide, circle, blur, whip pan, light leak and glitch transitions, blank title cards with a soft drifting light, and twelve color grades (cinematic, film, teal and orange, noir, golden and more). A playbook in the edit guide pairs them by mood, and the agent can import a hand-picked set of stock sound effects by name (see `docs/assets.md`). Screen recordings are split into moments, one per screen or step.
 
 Tool results are compact text (and images for frames) written for an agent to read: ids first, times as `m:ss.s`, and errors that say what to do next.
 
